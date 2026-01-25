@@ -1,0 +1,609 @@
+// Tool definitions for QuickBooks MCP server
+
+export const toolDefinitions = [
+  {
+    name: "get_company_info",
+    description: "Get information about the connected QuickBooks company.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      required: [],
+    },
+  },
+  {
+    name: "query",
+    description: "Execute a QuickBooks query using SQL-like syntax. Supports querying any entity type (Customer, Vendor, Invoice, Bill, Account, Item, Department, etc.). Results are written to a file to preserve context. Defaults to MAXRESULTS 1000 if not specified. Examples: 'SELECT * FROM Customer', 'SELECT * FROM SalesReceipt WHERE TxnDate >= \\'2025-11-01\\' AND TxnDate <= \\'2025-11-30\\''",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "The SQL-like query string. Common entities: Customer, Vendor, Invoice, Bill, Account, Item, Department, JournalEntry, Purchase, Payment, SalesReceipt, Deposit. Add MAXRESULTS N to limit results (default: 1000). Note: DepartmentRef and AccountRef are not filterable in QB API - use client-side filtering with jq instead.",
+        },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "list_accounts",
+    description: "List all accounts in the chart of accounts. Returns AcctNum (the user-facing account number), Name, AccountType, AccountSubType, and CurrentBalance. Use AcctNum to reference accounts in other queries or operations.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        account_type: {
+          type: "string",
+          description: "Optional filter by account type (e.g., 'Bank', 'Expense', 'Income', 'Other Current Asset', 'Fixed Asset', 'Other Current Liability', 'Equity')",
+        },
+        active_only: {
+          type: "boolean",
+          description: "If true, only return active accounts (default: true)",
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "get_profit_loss",
+    description: "Get a Profit and Loss (Income Statement) report. Can be broken down by department/location.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        start_date: {
+          type: "string",
+          description: "Start date in YYYY-MM-DD format",
+        },
+        end_date: {
+          type: "string",
+          description: "End date in YYYY-MM-DD format",
+        },
+        summarize_by: {
+          type: "string",
+          description: "How to summarize columns: 'Total' (default), 'Month', 'Week', 'Days', 'Quarter', 'Year', 'Customers', 'Vendors', 'Classes', 'Departments', 'Employees', 'ProductsAndServices'",
+        },
+        department: {
+          type: "string",
+          description: "Filter to a specific department/location ID",
+        },
+        accounting_method: {
+          type: "string",
+          description: "Accounting method: 'Accrual' (default) or 'Cash'",
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "get_balance_sheet",
+    description: "Get a Balance Sheet report. Can be broken down by department/location.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        as_of_date: {
+          type: "string",
+          description: "Report as of this date in YYYY-MM-DD format (defaults to today)",
+        },
+        summarize_by: {
+          type: "string",
+          description: "How to summarize columns: 'Total' (default), 'Month', 'Week', 'Days', 'Quarter', 'Year', 'Customers', 'Vendors', 'Classes', 'Departments', 'Employees', 'ProductsAndServices'",
+        },
+        department: {
+          type: "string",
+          description: "Filter to a specific department/location ID",
+        },
+        accounting_method: {
+          type: "string",
+          description: "Accounting method: 'Accrual' (default) or 'Cash'",
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "get_trial_balance",
+    description: "Get a Trial Balance report. Useful for month-end close and reconciliation. Note: Trial Balance does not support department/location breakdown in QuickBooks Online.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        start_date: {
+          type: "string",
+          description: "Start date in YYYY-MM-DD format",
+        },
+        end_date: {
+          type: "string",
+          description: "End date in YYYY-MM-DD format",
+        },
+        accounting_method: {
+          type: "string",
+          description: "Accounting method: 'Accrual' (default) or 'Cash'",
+        },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "query_account_transactions",
+    description: "Query all transactions affecting a specific account. Searches across JournalEntry, Purchase, Deposit, SalesReceipt, Bill, Invoice, and Payment. Returns consolidated list with date, type, amount (debit/credit), and description. Useful for investigating account balance discrepancies.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        account: {
+          type: "string",
+          description: "Account name, number (AcctNum), or ID. Examples: 'Tips', '2320', '116'"
+        },
+        start_date: {
+          type: "string",
+          description: "Start date YYYY-MM-DD (default: start of year)"
+        },
+        end_date: {
+          type: "string",
+          description: "End date YYYY-MM-DD (default: today)"
+        },
+        department: {
+          type: "string",
+          description: "Filter to specific department/location (optional)"
+        }
+      },
+      required: ["account"]
+    }
+  },
+  {
+    name: "create_journal_entry",
+    description: "Create a journal entry. Accepts account/department names (will lookup IDs automatically). Validates debits=credits before creating. Returns entry details and a link to view in QuickBooks.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        txn_date: {
+          type: "string",
+          description: "Transaction date in YYYY-MM-DD format",
+        },
+        memo: {
+          type: "string",
+          description: "Private memo for the journal entry",
+        },
+        lines: {
+          type: "array",
+          description: "Array of line items. Provide account_name OR account_id (name preferred). Optionally provide department_name OR department_id.",
+          items: {
+            type: "object",
+            properties: {
+              account_name: {
+                type: "string",
+                description: "Account name (e.g., 'Tips', '2320 Tips'). Will be looked up to get ID.",
+              },
+              account_id: {
+                type: "string",
+                description: "Account ID (use if you already know it, otherwise use account_name)",
+              },
+              amount: {
+                type: "number",
+                description: "Line amount (positive number)",
+              },
+              posting_type: {
+                type: "string",
+                enum: ["Debit", "Credit"],
+                description: "Whether this line is a Debit or Credit",
+              },
+              department_name: {
+                type: "string",
+                description: "Department/Location name (e.g., '20358', 'Santa Rosa'). Will be looked up to get ID.",
+              },
+              department_id: {
+                type: "string",
+                description: "Department/Location ID (use if you already know it, otherwise use department_name)",
+              },
+              description: {
+                type: "string",
+                description: "Line description (optional)",
+              },
+            },
+            required: ["amount", "posting_type"],
+          },
+        },
+        draft: {
+          type: "boolean",
+          description: "If true, validate and show preview without creating (default: true)",
+        },
+        doc_number: {
+          type: "string",
+          description: "Journal number (shown as 'Journal no.' in QuickBooks). If not specified, QuickBooks will auto-assign the next number.",
+        },
+      },
+      required: ["txn_date", "lines"],
+    },
+  },
+  {
+    name: "get_journal_entry",
+    description: "Fetch a single journal entry by ID with full details including SyncToken (needed for edits). Returns formatted summary and writes full object to temp file.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: {
+          type: "string",
+          description: "The journal entry ID",
+        },
+      },
+      required: ["id"],
+    },
+  },
+  {
+    name: "edit_journal_entry",
+    description: "Modify an existing journal entry. Can update date, memo, doc_number, and/or lines. For lines: provide line_id to update existing line, omit line_id to add new line, set delete=true to remove a line. Validates debits=credits before saving.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: {
+          type: "string",
+          description: "Journal entry ID to edit",
+        },
+        txn_date: {
+          type: "string",
+          description: "New transaction date in YYYY-MM-DD format (optional)",
+        },
+        memo: {
+          type: "string",
+          description: "New private memo (optional)",
+        },
+        doc_number: {
+          type: "string",
+          description: "New journal number (optional)",
+        },
+        lines: {
+          type: "array",
+          description: "Line modifications. Provide line_id to update existing line, omit to add new line.",
+          items: {
+            type: "object",
+            properties: {
+              line_id: {
+                type: "string",
+                description: "ID of existing line to update (omit for new line)",
+              },
+              account_name: {
+                type: "string",
+                description: "Account name/number (auto-resolved to ID)",
+              },
+              amount: {
+                type: "number",
+                description: "Line amount (positive number)",
+              },
+              posting_type: {
+                type: "string",
+                enum: ["Debit", "Credit"],
+                description: "Whether this line is a Debit or Credit",
+              },
+              department_name: {
+                type: "string",
+                description: "Department/Location name (auto-resolved to ID)",
+              },
+              description: {
+                type: "string",
+                description: "Line description",
+              },
+              delete: {
+                type: "boolean",
+                description: "Set true to remove this line (requires line_id)",
+              },
+            },
+          },
+        },
+        draft: {
+          type: "boolean",
+          description: "If true, validate and show preview without saving (default: true)",
+        },
+      },
+      required: ["id"],
+    },
+  },
+  {
+    name: "get_bill",
+    description: "Fetch a single bill by ID with full details including SyncToken (needed for edits). Returns vendor, date, due date, amount, AP account, line details.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: {
+          type: "string",
+          description: "The bill ID",
+        },
+      },
+      required: ["id"],
+    },
+  },
+  {
+    name: "edit_bill",
+    description: "Modify an existing bill. Can update date, due date, memo, and/or lines. For lines: provide line_id to update existing line, omit to add new line, set delete=true to remove.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: {
+          type: "string",
+          description: "Bill ID to edit",
+        },
+        txn_date: {
+          type: "string",
+          description: "New transaction date in YYYY-MM-DD format (optional)",
+        },
+        due_date: {
+          type: "string",
+          description: "New due date in YYYY-MM-DD format (optional)",
+        },
+        memo: {
+          type: "string",
+          description: "New private memo (optional)",
+        },
+        lines: {
+          type: "array",
+          description: "Line modifications. Provide line_id to update existing, omit to add new.",
+          items: {
+            type: "object",
+            properties: {
+              line_id: {
+                type: "string",
+                description: "ID of existing line to update (omit for new line)",
+              },
+              account_name: {
+                type: "string",
+                description: "Account name/number (auto-resolved to ID)",
+              },
+              amount: {
+                type: "number",
+                description: "Line amount (positive number)",
+              },
+              description: {
+                type: "string",
+                description: "Line description",
+              },
+              department_name: {
+                type: "string",
+                description: "Department/Location name (auto-resolved to ID)",
+              },
+              delete: {
+                type: "boolean",
+                description: "Set true to remove this line (requires line_id)",
+              },
+            },
+          },
+        },
+        draft: {
+          type: "boolean",
+          description: "If true, validate and show preview without saving (default: true)",
+        },
+      },
+      required: ["id"],
+    },
+  },
+  {
+    name: "get_expense",
+    description: "Fetch a single expense (Purchase) by ID with full details including SyncToken. Covers Expenses, Checks, and Credit Card charges. Returns payment type, account, date, amount, line details.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: {
+          type: "string",
+          description: "The expense (Purchase) ID",
+        },
+      },
+      required: ["id"],
+    },
+  },
+  {
+    name: "edit_expense",
+    description: "Modify an existing expense (Purchase). Can update date, memo, payment account, and/or lines. Note: PaymentType (Cash/Check/CreditCard) cannot be changed after creation.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: {
+          type: "string",
+          description: "Expense (Purchase) ID to edit",
+        },
+        txn_date: {
+          type: "string",
+          description: "New transaction date in YYYY-MM-DD format (optional)",
+        },
+        memo: {
+          type: "string",
+          description: "New private memo (optional)",
+        },
+        payment_account: {
+          type: "string",
+          description: "New payment account name/number (Bank or Credit Card account)",
+        },
+        lines: {
+          type: "array",
+          description: "Line modifications. Provide line_id to update existing, omit to add new.",
+          items: {
+            type: "object",
+            properties: {
+              line_id: {
+                type: "string",
+                description: "ID of existing line to update (omit for new line)",
+              },
+              account_name: {
+                type: "string",
+                description: "Account name/number (auto-resolved to ID)",
+              },
+              amount: {
+                type: "number",
+                description: "Line amount (positive number)",
+              },
+              description: {
+                type: "string",
+                description: "Line description",
+              },
+              department_name: {
+                type: "string",
+                description: "Department/Location name (auto-resolved to ID)",
+              },
+              delete: {
+                type: "boolean",
+                description: "Set true to remove this line (requires line_id)",
+              },
+            },
+          },
+        },
+        draft: {
+          type: "boolean",
+          description: "If true, validate and show preview without saving (default: true)",
+        },
+      },
+      required: ["id"],
+    },
+  },
+  {
+    name: "get_sales_receipt",
+    description: "Fetch a single sales receipt by ID with full details including SyncToken (needed for edits). Returns customer, date, deposit account, department, line details with items/qty/price.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: {
+          type: "string",
+          description: "The sales receipt ID",
+        },
+      },
+      required: ["id"],
+    },
+  },
+  {
+    name: "edit_sales_receipt",
+    description: "Modify an existing sales receipt. Can update date, memo, deposit account, department, and/or lines. For lines: provide line_id to update existing line, set delete=true to remove. Note: Adding new lines is not yet supported (requires item lookup).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: {
+          type: "string",
+          description: "Sales receipt ID to edit",
+        },
+        txn_date: {
+          type: "string",
+          description: "New transaction date in YYYY-MM-DD format (optional)",
+        },
+        memo: {
+          type: "string",
+          description: "New private memo (optional)",
+        },
+        deposit_to_account: {
+          type: "string",
+          description: "New deposit account name/number (Bank account)",
+        },
+        department_name: {
+          type: "string",
+          description: "Header-level department/location name (auto-resolved to ID)",
+        },
+        lines: {
+          type: "array",
+          description: "Line modifications. Provide line_id to update existing line. Adding new lines not yet supported.",
+          items: {
+            type: "object",
+            properties: {
+              line_id: {
+                type: "string",
+                description: "ID of existing line to update (required for modifications)",
+              },
+              amount: {
+                type: "number",
+                description: "Line amount (positive number)",
+              },
+              description: {
+                type: "string",
+                description: "Line description",
+              },
+              department_name: {
+                type: "string",
+                description: "Line-level department/location name (auto-resolved to ID)",
+              },
+              delete: {
+                type: "boolean",
+                description: "Set true to remove this line (requires line_id)",
+              },
+            },
+          },
+        },
+        draft: {
+          type: "boolean",
+          description: "If true, validate and show preview without saving (default: true)",
+        },
+      },
+      required: ["id"],
+    },
+  },
+  {
+    name: "get_deposit",
+    description: "Fetch a single deposit by ID with full details including SyncToken (needed for edits). Returns deposit account, date, memo, and line details showing source accounts and amounts.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: {
+          type: "string",
+          description: "The deposit ID",
+        },
+      },
+      required: ["id"],
+    },
+  },
+  {
+    name: "edit_deposit",
+    description: "Modify an existing deposit. Can update date, memo, deposit account, department, and/or lines. CRITICAL for line changes: The QB Deposit API does NOT replace lines - it merges them. Lines WITH line_id update existing lines. Lines WITHOUT line_id are ADDED as new. Lines NOT included are KEPT unchanged. To 'delete' a line, you must include ALL existing lines with their line_ids and set unwanted lines to amount: 0. Line amounts must sum to the original deposit total (use expected_total to override for corrupted deposits).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: {
+          type: "string",
+          description: "Deposit ID to edit",
+        },
+        txn_date: {
+          type: "string",
+          description: "New transaction date in YYYY-MM-DD format (optional)",
+        },
+        memo: {
+          type: "string",
+          description: "New private memo (optional)",
+        },
+        deposit_to_account: {
+          type: "string",
+          description: "New deposit account name/number (Bank account)",
+        },
+        department_name: {
+          type: "string",
+          description: "Header-level department/location name (auto-resolved to ID)",
+        },
+        lines: {
+          type: "array",
+          description: "IMPORTANT: You MUST include ALL existing lines with their line_ids. Lines without line_id are ADDED (not replaced). Lines not included are KEPT (not deleted). To 'delete' a line, set its amount to 0. Line amounts must sum to original deposit total.",
+          items: {
+            type: "object",
+            properties: {
+              line_id: {
+                type: "string",
+                description: "ID of existing line to update (preserves Entity/Vendor reference). Omit to create new line.",
+              },
+              amount: {
+                type: "number",
+                description: "Line amount (positive or negative number)",
+              },
+              account_name: {
+                type: "string",
+                description: "Source account name/number (auto-resolved to ID)",
+              },
+              description: {
+                type: "string",
+                description: "Line description",
+              },
+              department_name: {
+                type: "string",
+                description: "Line-level department/location name (auto-resolved to ID)",
+              },
+            },
+            required: ["amount", "account_name"],
+          },
+        },
+        draft: {
+          type: "boolean",
+          description: "If true, validate and show preview without saving (default: true)",
+        },
+        expected_total: {
+          type: "number",
+          description: "Override total validation with this expected amount (for fixing corrupted deposits). Lines must sum to this value instead of current deposit total.",
+        },
+      },
+      required: ["id"],
+    },
+  },
+];

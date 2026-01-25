@@ -1,0 +1,31 @@
+{
+  "name": "quickbooks-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for QuickBooks Online API integration",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsc --watch"
+  },
+  "keywords": [
+    "mcp",
+    "quickbooks",
+    "api",
+    "accounting"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@aws-sdk/client-secrets-manager": "^3.700.0",
+    "@aws-sdk/client-ssm": "^3.700.0",
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "node-quickbooks": "^2.0.47",
+    "tmp": "^0.2.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/tmp": "^0.2.6",
+    "typescript": "^5.3.0"
+  }
+}

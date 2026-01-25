@@ -1,0 +1,104 @@
+// Tool registry and dispatcher with auth retry
+
+import QuickBooks from "node-quickbooks";
+import { getClient, clearCredentialsCache, isAuthError } from "../client/index.js";
+import {
+  handleGetCompanyInfo,
+  handleQuery,
+  handleListAccounts,
+  handleGetProfitLoss,
+  handleGetBalanceSheet,
+  handleGetTrialBalance,
+  handleQueryAccountTransactions,
+  handleCreateJournalEntry,
+  handleGetJournalEntry,
+  handleEditJournalEntry,
+  handleGetBill,
+  handleEditBill,
+  handleGetExpense,
+  handleEditExpense,
+  handleGetSalesReceipt,
+  handleEditSalesReceipt,
+  handleGetDeposit,
+  handleEditDeposit,
+} from "./handlers/index.js";
+
+export { toolDefinitions } from "./definitions.js";
+
+type ToolResult = { content: Array<{ type: string; text: string }>; isError?: boolean };
+type ToolHandler = (client: QuickBooks, args: Record<string, unknown>) => Promise<ToolResult>;
+
+// Tool handler registry
+const toolHandlers = new Map<string, ToolHandler>();
+
+// Register all tools
+toolHandlers.set("get_company_info", (client) => handleGetCompanyInfo(client));
+toolHandlers.set("query", (client, args) => handleQuery(client, args as { query: string }));
+toolHandlers.set("list_accounts", (client, args) => handleListAccounts(client, args as { account_type?: string; active_only?: boolean }));
+toolHandlers.set("get_profit_loss", (client, args) => handleGetProfitLoss(client, args as Parameters<typeof handleGetProfitLoss>[1]));
+toolHandlers.set("get_balance_sheet", (client, args) => handleGetBalanceSheet(client, args as Parameters<typeof handleGetBalanceSheet>[1]));
+toolHandlers.set("get_trial_balance", (client, args) => handleGetTrialBalance(client, args as Parameters<typeof handleGetTrialBalance>[1]));
+toolHandlers.set("query_account_transactions", (client, args) => handleQueryAccountTransactions(client, args as Parameters<typeof handleQueryAccountTransactions>[1]));
+toolHandlers.set("create_journal_entry", (client, args) => handleCreateJournalEntry(client, args as Parameters<typeof handleCreateJournalEntry>[1]));
+toolHandlers.set("get_journal_entry", (client, args) => handleGetJournalEntry(client, args as { id: string }));
+toolHandlers.set("edit_journal_entry", (client, args) => handleEditJournalEntry(client, args as Parameters<typeof handleEditJournalEntry>[1]));
+toolHandlers.set("get_bill", (client, args) => handleGetBill(client, args as { id: string }));
+toolHandlers.set("edit_bill", (client, args) => handleEditBill(client, args as Parameters<typeof handleEditBill>[1]));
+toolHandlers.set("get_expense", (client, args) => handleGetExpense(client, args as { id: string }));
+toolHandlers.set("edit_expense", (client, args) => handleEditExpense(client, args as Parameters<typeof handleEditExpense>[1]));
+toolHandlers.set("get_sales_receipt", (client, args) => handleGetSalesReceipt(client, args as { id: string }));
+toolHandlers.set("edit_sales_receipt", (client, args) => handleEditSalesReceipt(client, args as Parameters<typeof handleEditSalesReceipt>[1]));
+toolHandlers.set("get_deposit", (client, args) => handleGetDeposit(client, args as { id: string }));
+toolHandlers.set("edit_deposit", (client, args) => handleEditDeposit(client, args as Parameters<typeof handleEditDeposit>[1]));
+
+// Execute tool with auth retry logic
+export async function executeTool(
+  name: string,
+  args: Record<string, unknown>
+): Promise<ToolResult> {
+  const handler = toolHandlers.get(name);
+  if (!handler) {
+    throw new Error(`Unknown tool: ${name}`);
+  }
+
+  const executeOperation = async () => {
+    const client = await getClient();
+    return handler(client, args);
+  };
+
+  // Execute with retry on auth failure
+  try {
+    return await executeOperation();
+  } catch (error) {
+    if (isAuthError(error)) {
+      // Clear cache and retry once with fresh credentials from Secrets Manager
+      clearCredentialsCache();
+      try {
+        return await executeOperation();
+      } catch (retryError) {
+        // If retry also fails, return that error
+        const errorMessage = typeof retryError === 'object' && retryError !== null
+          ? JSON.stringify(retryError, null, 2)
+          : String(retryError);
+        return {
+          content: [{ type: "text", text: `Error after retry: ${errorMessage}` }],
+          isError: true,
+        };
+      }
+    }
+
+    let errorMessage: string;
+    if (error instanceof Error) {
+      errorMessage = error.message;
+    } else if (typeof error === 'object' && error !== null) {
+      // node-quickbooks often returns error objects with Fault property
+      errorMessage = JSON.stringify(error, null, 2);
+    } else {
+      errorMessage = String(error);
+    }
+    return {
+      content: [{ type: "text", text: `Error: ${errorMessage}` }],
+      isError: true,
+    };
+  }
+}
