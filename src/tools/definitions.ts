@@ -622,6 +622,74 @@ export const toolDefinitions = [
     },
   },
   {
+    name: "create_deposit",
+    description: "Create a bank deposit. Accepts account/department/vendor names (will lookup IDs automatically). Lines represent the sources of the deposit — amounts can be positive (income) or negative (fees, deductions). QuickBooks computes the total from line amounts. Returns deposit details and a link to view in QuickBooks.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        deposit_to_account: {
+          type: "string",
+          description: "Bank account name or number receiving the deposit (e.g., 'PLAT BUS CHECKING', '5752'). Will be looked up to get ID.",
+        },
+        txn_date: {
+          type: "string",
+          description: "Transaction date in YYYY-MM-DD format",
+        },
+        lines: {
+          type: "array",
+          description: "Array of deposit line items. Each line represents a source of the deposit. Amounts can be positive or negative.",
+          items: {
+            type: "object",
+            properties: {
+              amount: {
+                type: "number",
+                description: "Line amount (positive or negative). Negative for fees/deductions.",
+              },
+              account_name: {
+                type: "string",
+                description: "Source account name or number (e.g., 'House Account', '1340', '6210 Bank Service Charges'). Will be looked up to get ID.",
+              },
+              account_id: {
+                type: "string",
+                description: "Account ID (use if you already know it, otherwise use account_name)",
+              },
+              description: {
+                type: "string",
+                description: "Line description (optional)",
+              },
+              entity_name: {
+                type: "string",
+                description: "Vendor or customer name (e.g., 'Square Inc.'). Sets Entity on the deposit line. Will be looked up to get ID.",
+              },
+              entity_id: {
+                type: "string",
+                description: "Entity ID (use if you already know it, otherwise use entity_name)",
+              },
+            },
+            required: ["amount"],
+          },
+        },
+        department_name: {
+          type: "string",
+          description: "Header-level department/location name (e.g., '20358', 'Cotati'). Will be looked up to get ID.",
+        },
+        department_id: {
+          type: "string",
+          description: "Header-level department/location ID (use if you already know it, otherwise use department_name)",
+        },
+        memo: {
+          type: "string",
+          description: "Private memo for the deposit",
+        },
+        draft: {
+          type: "boolean",
+          description: "If true, validate and show preview without creating (default: true)",
+        },
+      },
+      required: ["deposit_to_account", "txn_date", "lines"],
+    },
+  },
+  {
     name: "get_deposit",
     description: "Fetch a single deposit by ID with full details including SyncToken (needed for edits). Returns deposit account, date, memo, and line details showing source accounts and amounts.",
     inputSchema: {

@@ -1,15 +1,28 @@
-// Handlers for deposit tools (get, edit)
+// Handlers for deposit tools (create, get, edit)
 
 import QuickBooks from "node-quickbooks";
 import {
   promisify,
   getAccountCache,
   getDepartmentCache,
+  getVendorCache,
 } from "../../client/index.js";
-import { writeReport, validateAmount, toDollars, toCents, sumCents } from "../../utils/index.js";
+import { writeReport, validateAmount, toDollars, formatDollars, toCents, sumCents } from "../../utils/index.js";
+import type { AccountCache, DepartmentCache, VendorCache } from "../../types/index.js";
 
-// For full line replacement - each line requires amount and account
-// If line_id is provided, updates existing line; otherwise creates new line
+// --- Interfaces ---
+
+// For create_deposit lines
+interface CreateDepositLineInput {
+  amount: number;
+  account_name?: string;
+  account_id?: string;
+  description?: string;
+  entity_name?: string;
+  entity_id?: string;
+}
+
+// For edit_deposit lines (has line_id, no entity support)
 interface DepositLineInput {
   line_id?: string;  // Include to update existing line (preserves Entity ref)
   amount: number;
@@ -43,6 +56,208 @@ interface Deposit {
   DepositToAccountRef?: { value: string; name?: string };
   DepartmentRef?: { value: string; name?: string };
   Line?: DepositLine[];
+}
+
+// --- Shared resolution helpers ---
+
+function resolveAccountRef(
+  acctCache: AccountCache,
+  name: string
+): { value: string; name: string } {
+  let match = acctCache.byAcctNum.get(name.toLowerCase());
+  if (!match) match = acctCache.byName.get(name.toLowerCase());
+  if (!match) match = acctCache.items.find(a =>
+    a.FullyQualifiedName?.toLowerCase().includes(name.toLowerCase())
+  );
+  if (!match) throw new Error(`Account not found: "${name}"`);
+  return { value: match.Id, name: match.FullyQualifiedName || match.Name };
+}
+
+function resolveDepartmentRef(
+  deptCache: DepartmentCache,
+  nameOrId: string
+): { value: string; name: string } {
+  const byId = deptCache.byId.get(nameOrId);
+  if (byId) return { value: byId.Id, name: byId.FullyQualifiedName || byId.Name };
+
+  let match = deptCache.byName.get(nameOrId.toLowerCase());
+  if (!match) match = deptCache.items.find(d =>
+    d.FullyQualifiedName?.toLowerCase().includes(nameOrId.toLowerCase())
+  );
+  if (!match) throw new Error(`Department not found: "${nameOrId}"`);
+  return { value: match.Id, name: match.FullyQualifiedName || match.Name };
+}
+
+function resolveEntityRef(
+  vendorCache: VendorCache,
+  nameOrId: string
+): { value: string; name: string; type: string } {
+  const byId = vendorCache.byId.get(nameOrId);
+  if (byId) return { value: byId.Id, name: byId.DisplayName, type: "VENDOR" };
+
+  const byName = vendorCache.byName.get(nameOrId.toLowerCase());
+  if (byName) return { value: byName.Id, name: byName.DisplayName, type: "VENDOR" };
+
+  const byPartial = vendorCache.items.find(v =>
+    v.DisplayName.toLowerCase().includes(nameOrId.toLowerCase())
+  );
+  if (byPartial) return { value: byPartial.Id, name: byPartial.DisplayName, type: "VENDOR" };
+
+  throw new Error(`Vendor not found: "${nameOrId}"`);
+}
+
+// --- Handlers ---
+
+export async function handleCreateDeposit(
+  client: QuickBooks,
+  args: {
+    deposit_to_account: string;
+    txn_date: string;
+    lines: CreateDepositLineInput[];
+    department_name?: string;
+    department_id?: string;
+    memo?: string;
+    draft?: boolean;
+  }
+): Promise<{ content: Array<{ type: string; text: string }> }> {
+  const {
+    deposit_to_account, txn_date, lines,
+    department_name, department_id, memo, draft = true,
+  } = args;
+
+  if (!lines || lines.length === 0) {
+    throw new Error("At least one line is required");
+  }
+
+  // Parallel cache fetch
+  const [acctCache, deptCache, vendorCacheData] = await Promise.all([
+    getAccountCache(client),
+    getDepartmentCache(client),
+    getVendorCache(client),
+  ]);
+
+  // Resolve deposit_to_account
+  const depositToRef = resolveAccountRef(acctCache, deposit_to_account);
+
+  // Resolve header-level department
+  let departmentRef: { value: string; name: string } | undefined;
+  const deptInput = department_id || department_name;
+  if (deptInput) {
+    departmentRef = resolveDepartmentRef(deptCache, deptInput);
+  }
+
+  // Resolve lines
+  const resolvedLines = lines.map((line, i) => {
+    const label = `Line ${i + 1}`;
+
+    // Resolve account
+    let accountRef: { value: string; name: string };
+    if (line.account_id) {
+      const byId = acctCache.byId.get(line.account_id);
+      if (byId) {
+        accountRef = { value: byId.Id, name: byId.FullyQualifiedName || byId.Name };
+      } else {
+        throw new Error(`${label}: Account ID not found: "${line.account_id}"`);
+      }
+    } else if (line.account_name) {
+      accountRef = resolveAccountRef(acctCache, line.account_name);
+    } else {
+      throw new Error(`${label}: Either account_name or account_id is required`);
+    }
+
+    // Validate amount
+    const amountCents = validateAmount(line.amount, label);
+
+    // Resolve entity if provided
+    let entityRef: { value: string; name: string; type: string } | undefined;
+    if (line.entity_id) {
+      entityRef = resolveEntityRef(vendorCacheData, line.entity_id);
+    } else if (line.entity_name) {
+      entityRef = resolveEntityRef(vendorCacheData, line.entity_name);
+    }
+
+    return {
+      accountRef,
+      amountCents,
+      amount: toDollars(amountCents),
+      description: line.description,
+      entityRef,
+    };
+  });
+
+  // Calculate total for display
+  const totalCents = sumCents(resolvedLines.map(l => l.amountCents));
+
+  // Build QB deposit object
+  const depositObject: Record<string, unknown> = {
+    DepositToAccountRef: depositToRef,
+    TxnDate: txn_date,
+    ...(departmentRef && { DepartmentRef: departmentRef }),
+    ...(memo && { PrivateNote: memo }),
+    Line: resolvedLines.map(line => {
+      const depositLineDetail: Record<string, unknown> = {
+        AccountRef: line.accountRef,
+      };
+      if (line.entityRef) {
+        depositLineDetail.Entity = line.entityRef;
+      }
+      return {
+        Amount: line.amount,
+        DetailType: "DepositLineDetail",
+        ...(line.description && { Description: line.description }),
+        DepositLineDetail: depositLineDetail,
+      };
+    }),
+  };
+
+  if (draft) {
+    const preview = [
+      "DRAFT - Deposit Preview",
+      "",
+      `Date: ${txn_date}`,
+      `Deposit To: ${depositToRef.name}`,
+      `Department: ${departmentRef?.name || "(none)"}`,
+      `Memo: ${memo || "(none)"}`,
+      "",
+      "Lines:",
+      ...resolvedLines.map(l => {
+        const entityStr = l.entityRef ? ` [${l.entityRef.name}]` : "";
+        const descStr = l.description ? ` "${l.description}"` : "";
+        return `  ${l.accountRef.name}: $${l.amount.toFixed(2)}${entityStr}${descStr}`;
+      }),
+      "  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+      `  Total: $${formatDollars(totalCents)}`,
+      "",
+      "Set draft=false to create this deposit.",
+    ].join("\n");
+
+    return {
+      content: [{ type: "text", text: preview }],
+    };
+  }
+
+  // Create the deposit
+  const result = await promisify<unknown>((cb) =>
+    client.createDeposit(depositObject, cb)
+  ) as { Id: string };
+
+  const qboUrl = `https://app.qbo.intuit.com/app/deposit?txnId=${result.Id}`;
+
+  const response = [
+    "Deposit Created!",
+    "",
+    `ID: ${result.Id}`,
+    `Date: ${txn_date}`,
+    `Deposit To: ${depositToRef.name}`,
+    `Department: ${departmentRef?.name || "(none)"}`,
+    `Total: $${formatDollars(totalCents)}`,
+    "",
+    `View in QuickBooks: ${qboUrl}`,
+  ].join("\n");
+
+  return {
+    content: [{ type: "text", text: response }],
+  };
 }
 
 export async function handleGetDeposit(
@@ -163,55 +378,31 @@ export async function handleEditDeposit(
   if (txn_date !== undefined) updated.TxnDate = txn_date;
   if (memo !== undefined) updated.PrivateNote = memo;
 
+  // Fetch caches when needed for header-level resolution or line processing
+  const needsAcctCache = deposit_to_account !== undefined || (newLines && newLines.length > 0);
+  const needsDeptCache = department_name !== undefined || (newLines && newLines.some(l => l.department_name));
+
+  const [acctCache, deptCache] = await Promise.all([
+    needsAcctCache ? getAccountCache(client) : Promise.resolve(null),
+    needsDeptCache ? getDepartmentCache(client) : Promise.resolve(null),
+  ]);
+
   // Resolve deposit_to_account if provided
   if (deposit_to_account !== undefined) {
-    const acctCache = await getAccountCache(client);
-    let match = acctCache.byAcctNum.get(deposit_to_account.toLowerCase());
-    if (!match) match = acctCache.byName.get(deposit_to_account.toLowerCase());
-    if (!match) match = acctCache.items.find(a =>
-      a.FullyQualifiedName?.toLowerCase().includes(deposit_to_account.toLowerCase())
-    );
-    if (!match) throw new Error(`Deposit account not found: "${deposit_to_account}"`);
-    updated.DepositToAccountRef = { value: match.Id, name: match.FullyQualifiedName || match.Name };
+    const ref = resolveAccountRef(acctCache!, deposit_to_account);
+    updated.DepositToAccountRef = ref;
   }
 
   // Resolve header-level department if provided
   if (department_name !== undefined) {
-    const deptCache = await getDepartmentCache(client);
-    let match = deptCache.byName.get(department_name.toLowerCase());
-    if (!match) match = deptCache.items.find(d =>
-      d.FullyQualifiedName?.toLowerCase().includes(department_name.toLowerCase())
-    );
-    if (!match) throw new Error(`Department not found: "${department_name}"`);
-    updated.DepartmentRef = { value: match.Id, name: match.FullyQualifiedName || match.Name };
+    const ref = resolveDepartmentRef(deptCache!, department_name);
+    updated.DepartmentRef = ref;
   }
 
   // Process full line replacement if provided
   // QB API does not support deleting individual deposit lines, so we do full replacement
   // The new lines must sum to the same total as the original deposit (bank amount cannot change)
   if (newLines && newLines.length > 0) {
-    const acctCache = await getAccountCache(client);
-    const deptCache = await getDepartmentCache(client);
-
-    const resolveAcct = (name: string) => {
-      let match = acctCache.byAcctNum.get(name.toLowerCase());
-      if (!match) match = acctCache.byName.get(name.toLowerCase());
-      if (!match) match = acctCache.items.find(a =>
-        a.FullyQualifiedName?.toLowerCase().includes(name.toLowerCase())
-      );
-      if (!match) throw new Error(`Account not found: "${name}"`);
-      return { value: match.Id, name: match.FullyQualifiedName || match.Name };
-    };
-
-    const resolveDept = (name: string) => {
-      let match = deptCache.byName.get(name.toLowerCase());
-      if (!match) match = deptCache.items.find(d =>
-        d.FullyQualifiedName?.toLowerCase().includes(name.toLowerCase())
-      );
-      if (!match) throw new Error(`Department not found: "${name}"`);
-      return { value: match.Id, name: match.FullyQualifiedName || match.Name };
-    };
-
     // Build new lines array (full replacement)
     // If line_id is provided, find existing line and update it (preserves Entity ref)
     // If line_id is not provided, create a new line
@@ -240,7 +431,7 @@ export async function handleEditDeposit(
         line.Amount = toDollars(amountCents);
         line.DepositLineDetail = {
           ...line.DepositLineDetail,
-          AccountRef: resolveAcct(input.account_name),
+          AccountRef: resolveAccountRef(acctCache!, input.account_name),
         };
       } else {
         // Create new line
@@ -248,7 +439,7 @@ export async function handleEditDeposit(
           Amount: toDollars(amountCents),
           DetailType: 'DepositLineDetail',
           DepositLineDetail: {
-            AccountRef: resolveAcct(input.account_name),
+            AccountRef: resolveAccountRef(acctCache!, input.account_name),
           },
         };
       }
@@ -257,7 +448,7 @@ export async function handleEditDeposit(
         line.Description = input.description;
       }
       if (input.department_name !== undefined) {
-        line.DepositLineDetail!.ClassRef = resolveDept(input.department_name);
+        line.DepositLineDetail!.ClassRef = resolveDepartmentRef(deptCache!, input.department_name);
       }
 
       finalLines.push(line);
@@ -297,15 +488,15 @@ export async function handleEditDeposit(
       'Changes:',
     ];
 
-    if (txn_date !== undefined) previewLines.push(`  Date: ${current.TxnDate} → ${txn_date}`);
-    if (memo !== undefined) previewLines.push(`  Memo: ${current.PrivateNote || '(none)'} → ${memo}`);
+    if (txn_date !== undefined) previewLines.push(`  Date: ${current.TxnDate} \u2192 ${txn_date}`);
+    if (memo !== undefined) previewLines.push(`  Memo: ${current.PrivateNote || '(none)'} \u2192 ${memo}`);
     if (deposit_to_account !== undefined) {
       const newAcct = (updated.DepositToAccountRef as { name?: string })?.name || deposit_to_account;
-      previewLines.push(`  Deposit To: ${current.DepositToAccountRef?.name || '(default)'} → ${newAcct}`);
+      previewLines.push(`  Deposit To: ${current.DepositToAccountRef?.name || '(default)'} \u2192 ${newAcct}`);
     }
     if (department_name !== undefined) {
       const newDept = (updated.DepartmentRef as { name?: string })?.name || department_name;
-      previewLines.push(`  Department: ${current.DepartmentRef?.name || '(none)'} → ${newDept}`);
+      previewLines.push(`  Department: ${current.DepartmentRef?.name || '(none)'} \u2192 ${newDept}`);
     }
 
     if (updated.Line) {
@@ -322,7 +513,7 @@ export async function handleEditDeposit(
           lineTotal += line.Amount;
         }
       }
-      previewLines.push(`  ─────────────`);
+      previewLines.push(`  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500`);
       if (expected_total !== undefined) {
         previewLines.push(`  Total: $${lineTotal.toFixed(2)} (expected: $${expected_total.toFixed(2)}, current: $${(current.TotalAmt || 0).toFixed(2)})`);
       } else {

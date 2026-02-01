@@ -55,6 +55,7 @@ declare module "node-quickbooks" {
 
     // Create methods
     createBill(bill: object, callback: Callback<unknown>): void;
+    createDeposit(deposit: object, callback: Callback<unknown>): void;
     createJournalEntry(journalEntry: object, callback: Callback<unknown>): void;
 
     // Get methods (single entity by ID)
