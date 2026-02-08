@@ -1,12 +1,20 @@
-// Handlers for expense tools (get, edit)
+// Handlers for expense tools (create, get, edit)
 
 import QuickBooks from "node-quickbooks";
 import {
   promisify,
   getAccountCache,
   getDepartmentCache,
+  getVendorCache,
 } from "../../client/index.js";
-import { writeReport, validateAmount, toDollars } from "../../utils/index.js";
+import { writeReport, validateAmount, toDollars, formatDollars, sumCents } from "../../utils/index.js";
+
+interface CreateExpenseLine {
+  account_id?: string;
+  account_name?: string;
+  amount: number;
+  description?: string;
+}
 
 interface ExpenseLineChange {
   line_id?: string;
@@ -14,6 +22,210 @@ interface ExpenseLineChange {
   amount?: number;
   description?: string;
   delete?: boolean;
+}
+
+export async function handleCreateExpense(
+  client: QuickBooks,
+  args: {
+    payment_type: "Cash" | "Check" | "CreditCard";
+    payment_account: string;
+    txn_date: string;
+    entity_name?: string;
+    entity_id?: string;
+    department_name?: string;
+    department_id?: string;
+    memo?: string;
+    doc_number?: string;
+    lines: CreateExpenseLine[];
+    draft?: boolean;
+  }
+): Promise<{ content: Array<{ type: string; text: string }> }> {
+  const {
+    payment_type, payment_account, txn_date,
+    entity_name, entity_id,
+    department_name, department_id,
+    memo, doc_number, lines, draft = true,
+  } = args;
+
+  if (!lines || lines.length === 0) {
+    throw new Error("At least one line is required");
+  }
+
+  // Get cached lookups in parallel
+  const [acctCache, deptCache, vendorCacheData] = await Promise.all([
+    getAccountCache(client),
+    getDepartmentCache(client),
+    getVendorCache(client),
+  ]);
+
+  // Resolve payment account
+  const lookupAccount = (name: string): { id: string; name: string; acctNum?: string } => {
+    let match = acctCache.byAcctNum.get(name.toLowerCase());
+    if (!match) match = acctCache.byName.get(name.toLowerCase());
+    if (!match) match = acctCache.items.find(a =>
+      a.FullyQualifiedName?.toLowerCase().includes(name.toLowerCase())
+    );
+    if (match) return { id: match.Id, name: match.FullyQualifiedName || match.Name, acctNum: match.AcctNum };
+    throw new Error(`Account not found: "${name}"`);
+  };
+
+  const paymentAcct = lookupAccount(payment_account);
+  const paymentAccountRef = { value: paymentAcct.id, name: paymentAcct.name };
+
+  // Resolve vendor/entity (optional)
+  let entityRef: { value: string; name: string; type: string } | undefined;
+  const entityInput = entity_id || entity_name;
+  if (entityInput) {
+    const byId = vendorCacheData.byId.get(entityInput);
+    if (byId) {
+      entityRef = { value: byId.Id, name: byId.DisplayName, type: "Vendor" };
+    } else {
+      const byName = vendorCacheData.byName.get(entityInput.toLowerCase());
+      if (byName) {
+        entityRef = { value: byName.Id, name: byName.DisplayName, type: "Vendor" };
+      } else {
+        const byPartial = vendorCacheData.items.find(v =>
+          v.DisplayName.toLowerCase().includes(entityInput.toLowerCase())
+        );
+        if (byPartial) {
+          entityRef = { value: byPartial.Id, name: byPartial.DisplayName, type: "Vendor" };
+        } else {
+          throw new Error(`Vendor not found: "${entityInput}"`);
+        }
+      }
+    }
+  }
+
+  // Resolve department (header-level, optional)
+  let departmentRef: { value: string; name: string } | undefined;
+  const deptInput = department_id || department_name;
+  if (deptInput) {
+    const byId = deptCache.byId.get(deptInput);
+    if (byId) {
+      departmentRef = { value: byId.Id, name: byId.FullyQualifiedName || byId.Name };
+    } else {
+      const byName = deptCache.byName.get(deptInput.toLowerCase());
+      if (byName) {
+        departmentRef = { value: byName.Id, name: byName.FullyQualifiedName || byName.Name };
+      } else {
+        const byPartial = deptCache.items.find(d =>
+          d.FullyQualifiedName?.toLowerCase().includes(deptInput.toLowerCase())
+        );
+        if (byPartial) {
+          departmentRef = { value: byPartial.Id, name: byPartial.FullyQualifiedName || byPartial.Name };
+        } else {
+          throw new Error(`Department not found: "${deptInput}"`);
+        }
+      }
+    }
+  }
+
+  // Resolve lines
+  const resolvedLines = lines.map((line) => {
+    let accountId = line.account_id;
+    let accountName = line.account_name;
+    let accountNum: string | undefined;
+
+    if (!accountId && accountName) {
+      const account = lookupAccount(accountName);
+      accountId = account.id;
+      accountName = account.name;
+      accountNum = account.acctNum;
+    } else if (!accountId && !accountName) {
+      throw new Error("Each line must have either account_id or account_name");
+    }
+
+    const amountCents = validateAmount(line.amount, `Line ${accountName || accountId}`);
+
+    return {
+      ...line,
+      account_id: accountId!,
+      account_name: accountName,
+      account_num: accountNum,
+      amount_cents: amountCents,
+      amount: toDollars(amountCents),
+    };
+  });
+
+  // Calculate total
+  const totalCents = sumCents(resolvedLines.map(l => l.amount_cents));
+
+  // Build QuickBooks Purchase object
+  const purchaseObject: Record<string, unknown> = {
+    PaymentType: payment_type,
+    AccountRef: paymentAccountRef,
+    TxnDate: txn_date,
+    ...(entityRef && { EntityRef: entityRef }),
+    ...(departmentRef && { DepartmentRef: departmentRef }),
+    ...(memo && { PrivateNote: memo }),
+    ...(doc_number && { DocNumber: doc_number }),
+    Line: resolvedLines.map((line) => ({
+      Amount: line.amount,
+      DetailType: "AccountBasedExpenseLineDetail",
+      ...(line.description && { Description: line.description }),
+      AccountBasedExpenseLineDetail: {
+        AccountRef: {
+          value: line.account_id,
+          name: line.account_name,
+        },
+      },
+    })),
+  };
+
+  if (draft) {
+    const formatAccount = (l: typeof resolvedLines[0]) => {
+      const num = l.account_num ? `${l.account_num} ` : "";
+      return `${num}${l.account_name || l.account_id}`;
+    };
+
+    const preview = [
+      "DRAFT - Expense Preview",
+      "",
+      `Payment Type: ${payment_type}`,
+      `Payment Account: ${paymentAcct.acctNum ? `${paymentAcct.acctNum} ` : ""}${paymentAcct.name}`,
+      `Payee: ${entityRef?.name || "(none)"}`,
+      `Date: ${txn_date}`,
+      `Ref no.: ${doc_number || "(auto-assign)"}`,
+      `Department: ${departmentRef?.name || "(none)"}`,
+      `Memo: ${memo || "(none)"}`,
+      `Total: $${formatDollars(totalCents)}`,
+      "",
+      "Lines:",
+      ...resolvedLines.map(l =>
+        `  ${formatAccount(l)}: $${l.amount.toFixed(2)}${l.description ? ` "${l.description}"` : ""}`
+      ),
+      "",
+      "Set draft=false to create this expense.",
+    ].join("\n");
+
+    return {
+      content: [{ type: "text", text: preview }],
+    };
+  }
+
+  // Create the expense
+  const result = await promisify<unknown>((cb) =>
+    client.createPurchase(purchaseObject, cb)
+  ) as { Id: string; DocNumber?: string };
+
+  const qboUrl = `https://app.qbo.intuit.com/app/expense?txnId=${result.Id}`;
+
+  const response = [
+    "Expense Created!",
+    "",
+    `Payment Type: ${payment_type}`,
+    `Payment Account: ${paymentAcct.name}`,
+    `Payee: ${entityRef?.name || "(none)"}`,
+    `Ref no.: ${result.DocNumber || "(auto-assigned)"}`,
+    `Date: ${txn_date}`,
+    `Total: $${formatDollars(totalCents)}`,
+    "",
+    `View in QuickBooks: ${qboUrl}`,
+  ].join("\n");
+
+  return {
+    content: [{ type: "text", text: response }],
+  };
 }
 
 export async function handleGetExpense(

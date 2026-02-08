@@ -15,7 +15,7 @@ export {
   handleEditJournalEntry,
 } from './journal-entry.js';
 export { handleCreateBill, handleGetBill, handleEditBill } from './bill.js';
-export { handleGetExpense, handleEditExpense } from './expense.js';
+export { handleCreateExpense, handleGetExpense, handleEditExpense } from './expense.js';
 export { handleGetSalesReceipt, handleEditSalesReceipt } from './sales-receipt.js';
 export { handleCreateDeposit, handleGetDeposit, handleEditDeposit } from './deposit.js';
 export { handleAuthenticate } from './authenticate.js';

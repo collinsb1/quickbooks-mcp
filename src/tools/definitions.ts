@@ -549,6 +549,83 @@ export const toolDefinitions = [
     },
   },
   {
+    name: "create_expense",
+    description: "Create an expense (Purchase). Accepts account/department/vendor names (will lookup IDs automatically). Covers Cash, Check, and Credit Card payment types. Note: PaymentType cannot be changed after creation. DepartmentRef is header-level only. Returns expense details and a link to view in QuickBooks.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        payment_type: {
+          type: "string",
+          enum: ["Cash", "Check", "CreditCard"],
+          description: "Payment method: 'Cash', 'Check', or 'CreditCard'. Cannot be changed after creation.",
+        },
+        payment_account: {
+          type: "string",
+          description: "Bank or credit card account name or number (e.g., 'PLAT BUS CHECKING', '5752'). Will be looked up to get ID.",
+        },
+        txn_date: {
+          type: "string",
+          description: "Transaction date in YYYY-MM-DD format",
+        },
+        entity_name: {
+          type: "string",
+          description: "Payee/vendor display name (e.g., 'Simplisafe', 'PG&E'). Will be looked up to get ID.",
+        },
+        entity_id: {
+          type: "string",
+          description: "Payee/vendor ID (use if you already know it, otherwise use entity_name)",
+        },
+        department_name: {
+          type: "string",
+          description: "Header-level department/location name (e.g., '20358', 'Cotati'). Will be looked up to get ID.",
+        },
+        department_id: {
+          type: "string",
+          description: "Header-level department/location ID (use if you already know it, otherwise use department_name)",
+        },
+        memo: {
+          type: "string",
+          description: "Private memo for the expense",
+        },
+        doc_number: {
+          type: "string",
+          description: "Reference number for the expense (optional)",
+        },
+        lines: {
+          type: "array",
+          description: "Array of expense line items. Provide account_name OR account_id (name preferred).",
+          items: {
+            type: "object",
+            properties: {
+              account_name: {
+                type: "string",
+                description: "Account name (e.g., 'Alarm', '6123'). Will be looked up to get ID.",
+              },
+              account_id: {
+                type: "string",
+                description: "Account ID (use if you already know it, otherwise use account_name)",
+              },
+              amount: {
+                type: "number",
+                description: "Line amount (positive number)",
+              },
+              description: {
+                type: "string",
+                description: "Line description (optional)",
+              },
+            },
+            required: ["amount"],
+          },
+        },
+        draft: {
+          type: "boolean",
+          description: "If true, validate and show preview without creating (default: true)",
+        },
+      },
+      required: ["payment_type", "payment_account", "txn_date", "lines"],
+    },
+  },
+  {
     name: "get_sales_receipt",
     description: "Fetch a single sales receipt by ID with full details including SyncToken (needed for edits). Returns customer, date, deposit account, department, line details with items/qty/price.",
     inputSchema: {
