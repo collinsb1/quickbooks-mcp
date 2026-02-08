@@ -564,7 +564,7 @@ export const toolDefinitions = [
   },
   {
     name: "edit_sales_receipt",
-    description: "Modify an existing sales receipt. Can update date, memo, deposit account, department, and/or lines. For lines: provide line_id to update existing line, set delete=true to remove. Note: Adding new lines is not yet supported (requires item lookup).",
+    description: "Modify an existing sales receipt. Can update date, memo, deposit account, department, and/or lines. For lines: provide line_id to update existing line, omit line_id to add new line (requires item_name), set delete=true to remove.",
     inputSchema: {
       type: "object",
       properties: {
@@ -590,25 +590,37 @@ export const toolDefinitions = [
         },
         lines: {
           type: "array",
-          description: "Line modifications. Provide line_id to update existing line. Adding new lines not yet supported.",
+          description: "Line modifications. Provide line_id to update existing line, omit to add new line.",
           items: {
             type: "object",
             properties: {
               line_id: {
                 type: "string",
-                description: "ID of existing line to update (required for modifications)",
+                description: "ID of existing line to update (omit for new line)",
+              },
+              item_name: {
+                type: "string",
+                description: "Item (product/service) name for new lines (e.g., 'Sales', 'Catering'). Auto-resolved to ID.",
+              },
+              item_id: {
+                type: "string",
+                description: "Item ID (use if you already know it, otherwise use item_name)",
               },
               amount: {
                 type: "number",
                 description: "Line amount (positive number)",
               },
+              qty: {
+                type: "number",
+                description: "Quantity (default: 1)",
+              },
+              unit_price: {
+                type: "number",
+                description: "Price per unit (if omitted, computed from amount / qty)",
+              },
               description: {
                 type: "string",
                 description: "Line description",
-              },
-              department_name: {
-                type: "string",
-                description: "Line-level department/location name (auto-resolved to ID)",
               },
               delete: {
                 type: "boolean",

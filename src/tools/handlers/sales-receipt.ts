@@ -4,14 +4,19 @@ import QuickBooks from "node-quickbooks";
 import {
   promisify,
   getDepartmentCache,
+  resolveItem,
 } from "../../client/index.js";
 import { writeReport, validateAmount, toDollars } from "../../utils/index.js";
 
 interface SalesReceiptLineChange {
   line_id?: string;
+  item_name?: string;
+  item_id?: string;
   amount?: number;
+  qty?: number;
+  unit_price?: number;
   description?: string;
-  department_name?: string;
+  department_name?: string;  // maps to ClassRef on existing lines
   delete?: boolean;
 }
 
@@ -245,8 +250,41 @@ export async function handleEditSalesReceipt(
           finalLines[lineIndex] = line;
         }
       } else {
-        // Adding new lines would require item_id - skip for now
-        throw new Error('Adding new lines to SalesReceipt requires item_id (not yet supported). Use line_id to modify existing lines.');
+        // New line — requires item reference
+        const itemInput = change.item_name || change.item_id;
+        if (!itemInput) {
+          throw new Error('New lines require item_name or item_id');
+        }
+        if (change.amount === undefined && (change.qty === undefined || change.unit_price === undefined)) {
+          throw new Error('New lines require amount, or both qty and unit_price');
+        }
+
+        const itemRef = await resolveItem(client, itemInput);
+
+        const qty = change.qty ?? 1;
+        let amountCents: number;
+        let unitPriceDollars: number;
+
+        if (change.amount !== undefined) {
+          amountCents = validateAmount(change.amount, `New line for ${itemRef.name}`);
+          unitPriceDollars = toDollars(amountCents) / qty;
+        } else {
+          const upCents = validateAmount(change.unit_price!, `New line unit_price for ${itemRef.name}`);
+          unitPriceDollars = toDollars(upCents);
+          amountCents = upCents * qty;
+        }
+
+        const newLine = {
+          DetailType: 'SalesItemLineDetail',
+          Amount: toDollars(amountCents),
+          ...(change.description && { Description: change.description }),
+          SalesItemLineDetail: {
+            ItemRef: itemRef,
+            Qty: qty,
+            UnitPrice: unitPriceDollars,
+          },
+        } as typeof finalLines[0];
+        finalLines.push(newLine);
       }
     }
 

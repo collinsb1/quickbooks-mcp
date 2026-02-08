@@ -6,6 +6,7 @@ import {
   CachedAccount,
   CachedDepartment,
   CachedVendor,
+  CachedItem,
   AccountCache,
   DepartmentCache,
   VendorCache,
@@ -19,11 +20,16 @@ const LOOKUP_CACHE_TTL_MS = 15 * 60 * 1000;
 let departmentCache: DepartmentCache | null = null;
 let accountCache: AccountCache | null = null;
 let vendorCache: VendorCache | null = null;
+// Item cache: lazy per-entry lookup (not bulk-loaded like others)
+const itemCacheById = new Map<string, CachedItem>();
+const itemCacheByName = new Map<string, CachedItem>(); // lowercase key
 
 export function clearLookupCache(): void {
   departmentCache = null;
   accountCache = null;
   vendorCache = null;
+  itemCacheById.clear();
+  itemCacheByName.clear();
 }
 
 // Helper to extract entities from QB query response with type safety
@@ -139,6 +145,57 @@ export async function resolveVendor(client: QuickBooks, nameOrId: string): Promi
   if (byPartial) return { value: byPartial.Id, name: byPartial.DisplayName };
 
   throw new Error(`Vendor not found: "${nameOrId}". Try using vendor display name or ID.`);
+}
+
+// Resolve item by name or ID using lazy per-entry cache
+// Unlike other caches, items are fetched on demand (companies can have thousands)
+export async function resolveItem(client: QuickBooks, nameOrId: string): Promise<{ value: string; name: string }> {
+  // Check cache first (with TTL)
+  const cached = itemCacheById.get(nameOrId) || itemCacheByName.get(nameOrId.toLowerCase());
+  if (cached && (Date.now() - cached.fetchedAt) < LOOKUP_CACHE_TTL_MS) {
+    return { value: cached.Id, name: cached.Name };
+  }
+
+  // Query QB for this specific item
+  // Try exact name match first, then partial
+  const result = await promisify<unknown>((cb) =>
+    client.findItems([
+      { field: 'Name', value: nameOrId, operator: '=' },
+      { field: 'Active', value: true, operator: '=' },
+    ], cb)
+  );
+  let items = extractQueryResults<{ Id: string; Name: string; FullyQualifiedName?: string; Type?: string; UnitPrice?: number; Active?: boolean }>(result, 'Item');
+
+  // If no exact match, try LIKE for partial matching
+  if (items.length === 0) {
+    const partialResult = await promisify<unknown>((cb) =>
+      client.findItems([
+        { field: 'Name', value: `%${nameOrId}%`, operator: 'LIKE' },
+        { field: 'Active', value: true, operator: '=' },
+      ], cb)
+    );
+    items = extractQueryResults<typeof items[0]>(partialResult, 'Item');
+  }
+
+  if (items.length === 0) {
+    throw new Error(`Item not found: "${nameOrId}". Try using the exact item name or ID.`);
+  }
+
+  // Use first match and cache it
+  const item = items[0];
+  const entry: CachedItem = {
+    Id: item.Id,
+    Name: item.Name,
+    FullyQualifiedName: item.FullyQualifiedName,
+    Type: item.Type,
+    UnitPrice: item.UnitPrice,
+    Active: item.Active,
+    fetchedAt: Date.now(),
+  };
+  itemCacheById.set(item.Id, entry);
+  itemCacheByName.set(item.Name.toLowerCase(), entry);
+
+  return { value: item.Id, name: item.Name };
 }
 
 // Helper to resolve department name to ID using cache

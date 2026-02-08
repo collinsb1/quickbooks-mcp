@@ -14,5 +14,6 @@ export {
   getVendorCache,
   resolveAccount,
   resolveVendor,
+  resolveItem,
   resolveDepartmentId,
 } from './cache.js';

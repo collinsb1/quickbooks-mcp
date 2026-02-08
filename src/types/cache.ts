@@ -43,3 +43,13 @@ export interface VendorCache {
   byName: Map<string, CachedVendor>;       // lowercase key
   fetchedAt: number;
 }
+
+export interface CachedItem {
+  Id: string;
+  Name: string;
+  FullyQualifiedName?: string;
+  Type?: string;       // "Service", "Inventory", "NonInventory", "Group", etc.
+  UnitPrice?: number;
+  Active?: boolean;
+  fetchedAt: number;   // per-entry TTL for lazy cache
+}
