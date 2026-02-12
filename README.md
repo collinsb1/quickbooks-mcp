@@ -1,23 +1,53 @@
 # QuickBooks MCP Server
 
-A Model Context Protocol (MCP) server that provides Claude with access to QuickBooks Online data. Enables querying customers, invoices, accounts, transactions, and more through natural language.
+An MCP server for QuickBooks Online — built for bookkeepers, CFOs, and accountants who use AI assistants in their daily workflow.
 
-## How This Differs from Intuit's Official Server
+Ask your AI assistant to pull a P&L report, create a journal entry, or investigate an account balance — using plain language, not API payloads.
 
-Intuit provides an [official MCP server](https://github.com/intuit/quickbooks-online-mcp-server) for learning and experimentation. This community server is designed for **production use** with additional features:
+## Why This Server?
 
-| Feature | Intuit Official | This Server |
-|---------|-----------------|-------------|
-| Environment | Sandbox only | Production + Sandbox |
-| Credential Storage | Local `.env` file | Local file or AWS Secrets Manager |
-| Financial Reports | No | P&L, Balance Sheet, Trial Balance |
-| Query Style | Entity-specific tools | Generic SQL-like queries |
-| Distribution | Clone from GitHub | NPM package (`npx quickbooks-mcp`) |
-| Multi-user Support | No | Yes (via AWS mode) |
+Intuit provides an [official MCP server](https://github.com/intuit/quickbooks-online-mcp-server) that's a solid starting point for developers exploring the QuickBooks API. This server takes a different approach: it's designed for **financial professionals working in production books**.
 
-**Use Intuit's server** if you're learning the QuickBooks API in a sandbox environment.
+### Use natural language, not internal IDs
 
-**Use this server** if you need production access, financial reports, or shared credential management.
+Intuit's server requires QuickBooks internal IDs for every reference — you need to look up a vendor's ID before creating a bill. This server resolves names automatically:
+
+```
+"Create a bill for PG&E, $450 to Utilities, dated 2025-01-15"
+→ Vendor, account, and department names are resolved automatically
+```
+
+### Financial reports built in
+
+This is the only QuickBooks MCP server with report tools. Pull a P&L, Balance Sheet, or Trial Balance — broken down by month, department, or class — without leaving your AI conversation.
+
+### Safe by default
+
+Every create and edit operation defaults to **draft/preview mode**. You see exactly what will be written to your books before committing. No accidental journal entries or misclassified expenses.
+
+### One query tool instead of dozens
+
+Instead of separate search tools for each entity type, a single SQL-like `query` tool works across all QuickBooks entities. AI assistants write SQL naturally, and QuickBooks validates it — no field whitelists to maintain.
+
+```
+"SELECT * FROM Purchase WHERE TxnDate >= '2025-01-01' AND TxnDate <= '2025-01-31'"
+```
+
+### Production-ready credential management
+
+Store credentials locally for personal use, or in AWS Secrets Manager for shared environments. OAuth tokens refresh automatically and persist across sessions.
+
+### At a glance
+
+| | Intuit Official | This Server |
+|--|-----------------|-------------|
+| **Audience** | Developers exploring the API | Bookkeepers, CFOs, accountants |
+| **Name resolution** | Requires internal QB IDs | Resolves names automatically |
+| **Financial reports** | None | P&L, Balance Sheet, Trial Balance |
+| **Write safety** | Executes immediately | Draft preview by default |
+| **Query approach** | Entity-specific search tools | SQL-like queries across all entities |
+| **Credentials** | Local `.env` file | Local file or AWS Secrets Manager |
+| **Distribution** | Clone from GitHub | `npx quickbooks-mcp` |
 
 ## Prerequisites
 
@@ -226,23 +256,34 @@ The server needs these AWS permissions:
 
 | Tool | Description |
 |------|-------------|
+| **Setup** | |
 | `qbo_authenticate` | Set up OAuth credentials (local mode only) |
 | `get_company_info` | Get connected company information |
-| `query` | Run SQL-like queries against QuickBooks |
-| `list_accounts` | List chart of accounts |
-| `get_profit_loss` | Get Profit & Loss report |
-| `get_balance_sheet` | Get Balance Sheet report |
-| `get_trial_balance` | Get Trial Balance report |
-| `query_account_transactions` | Query transactions for an account |
-| `create_journal_entry` | Create a journal entry |
+| **Query & Reports** | |
+| `query` | Run SQL-like queries against any QuickBooks entity |
+| `list_accounts` | List chart of accounts with filtering |
+| `get_profit_loss` | Profit & Loss report (by month, department, class, etc.) |
+| `get_balance_sheet` | Balance Sheet report |
+| `get_trial_balance` | Trial Balance report |
+| `query_account_transactions` | All transactions affecting a specific account |
+| **Journal Entries** | |
+| `create_journal_entry` | Create a journal entry (validates debits = credits) |
 | `get_journal_entry` | Fetch a journal entry by ID |
 | `edit_journal_entry` | Modify an existing journal entry |
+| **Bills** | |
+| `create_bill` | Create a vendor bill |
 | `get_bill` | Fetch a bill by ID |
 | `edit_bill` | Modify an existing bill |
+| **Expenses** | |
+| `create_expense` | Create an expense (Cash, Check, or Credit Card) |
 | `get_expense` | Fetch an expense by ID |
 | `edit_expense` | Modify an existing expense |
+| **Sales Receipts** | |
+| `create_sales_receipt` | Create a sales receipt with item lines |
 | `get_sales_receipt` | Fetch a sales receipt by ID |
 | `edit_sales_receipt` | Modify an existing sales receipt |
+| **Deposits** | |
+| `create_deposit` | Create a bank deposit |
 | `get_deposit` | Fetch a deposit by ID |
 | `edit_deposit` | Modify an existing deposit |
 
