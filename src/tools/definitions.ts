@@ -198,6 +198,41 @@ export const toolDefinitions = [
     },
   },
   {
+    name: "get_general_ledger",
+    description: "Get full line-level General Ledger detail for a single account over a required date range. " +
+      "Returns opening/closing balances, total debits/credits, net activity, transaction count, and up to 500 individual transaction lines. " +
+      "Unlike query_account_transactions, this tool sees ALL transaction types including Transfers. " +
+      "Use this for reconciliation, auditing, or any investigation requiring full GL detail. " +
+      "Results are capped at 500 lines; summary stats always reflect the complete dataset. " +
+      "If truncated, narrow the date range to retrieve all detail.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        account: {
+          type: "string",
+          description: "Account name, number (AcctNum), or ID",
+        },
+        start_date: {
+          type: "string",
+          description: "Start date YYYY-MM-DD (required)",
+        },
+        end_date: {
+          type: "string",
+          description: "End date YYYY-MM-DD (required)",
+        },
+        department: {
+          type: "string",
+          description: "Filter to specific department/location (optional)",
+        },
+        accounting_method: {
+          type: "string",
+          description: "Accounting method: 'Accrual' (default) or 'Cash'",
+        },
+      },
+      required: ["account", "start_date", "end_date"],
+    },
+  },
+  {
     name: "create_journal_entry",
     description: "Create a journal entry. Accepts account/department names (will lookup IDs automatically). Validates debits=credits before creating. Returns entry details and a link to view in QuickBooks.",
     inputSchema: {
