@@ -10,6 +10,7 @@ export {
 export {
   clearLookupCache,
   getDepartmentCache,
+  getClassCache,
   getAccountCache,
   getVendorCache,
   resolveAccount,
@@ -17,4 +18,5 @@ export {
   resolveItem,
   resolveCustomer,
   resolveDepartmentId,
+  resolveClassId,
 } from './cache.js';

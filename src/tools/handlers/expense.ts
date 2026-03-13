@@ -5,6 +5,7 @@ import {
   promisify,
   getAccountCache,
   getDepartmentCache,
+  getClassCache,
   getVendorCache,
 } from "../../client/index.js";
 import { validateAmount, toDollars, formatDollars, sumCents, outputReport } from "../../utils/index.js";
@@ -34,6 +35,7 @@ export async function handleCreateExpense(
     entity_id?: string;
     department_name?: string;
     department_id?: string;
+    class_name?: string;
     memo?: string;
     doc_number?: string;
     lines: CreateExpenseLine[];
@@ -43,7 +45,7 @@ export async function handleCreateExpense(
   const {
     payment_type, payment_account, txn_date,
     entity_name, entity_id,
-    department_name, department_id,
+    department_name, department_id, class_name,
     memo, doc_number, lines, draft = true,
   } = args;
 
@@ -52,9 +54,10 @@ export async function handleCreateExpense(
   }
 
   // Get cached lookups in parallel
-  const [acctCache, deptCache, vendorCacheData] = await Promise.all([
+  const [acctCache, deptCache, classCacheData, vendorCacheData] = await Promise.all([
     getAccountCache(client),
     getDepartmentCache(client),
+    getClassCache(client),
     getVendorCache(client),
   ]);
 
@@ -120,6 +123,29 @@ export async function handleCreateExpense(
     }
   }
 
+  // Resolve class (header-level)
+  let classRef: { value: string; name: string } | undefined;
+  if (class_name) {
+    const byId = classCacheData.byId.get(class_name);
+    if (byId) {
+      classRef = { value: byId.Id, name: byId.FullyQualifiedName || byId.Name };
+    } else {
+      const byName = classCacheData.byName.get(class_name.toLowerCase());
+      if (byName) {
+        classRef = { value: byName.Id, name: byName.FullyQualifiedName || byName.Name };
+      } else {
+        const byPartial = classCacheData.items.find(c =>
+          c.FullyQualifiedName?.toLowerCase().includes(class_name.toLowerCase())
+        );
+        if (byPartial) {
+          classRef = { value: byPartial.Id, name: byPartial.FullyQualifiedName || byPartial.Name };
+        } else {
+          throw new Error(`Class not found: "${class_name}"`);
+        }
+      }
+    }
+  }
+
   // Resolve lines
   const resolvedLines = lines.map((line) => {
     let accountId = line.account_id;
@@ -157,6 +183,7 @@ export async function handleCreateExpense(
     TxnDate: txn_date,
     ...(entityRef && { EntityRef: entityRef }),
     ...(departmentRef && { DepartmentRef: departmentRef }),
+    ...(classRef && { ClassRef: classRef }),
     ...(memo && { PrivateNote: memo }),
     ...(doc_number && { DocNumber: doc_number }),
     Line: resolvedLines.map((line) => ({
@@ -187,6 +214,7 @@ export async function handleCreateExpense(
       `Date: ${txn_date}`,
       `Ref no.: ${doc_number || "(auto-assign)"}`,
       `Department: ${departmentRef?.name || "(none)"}`,
+      `Class: ${classRef?.name || "(none)"}`,
       `Memo: ${memo || "(none)"}`,
       `Total: $${formatDollars(totalCents)}`,
       "",
@@ -247,6 +275,7 @@ export async function handleGetExpense(
     AccountRef?: { value: string; name?: string };
     EntityRef?: { value: string; name?: string; type?: string };
     DepartmentRef?: { value: string; name?: string };
+    ClassRef?: { value: string; name?: string };
     Line?: Array<{
       Id: string;
       Amount: number;
@@ -275,6 +304,7 @@ export async function handleGetExpense(
     `Payment Account: ${expense.AccountRef?.name || expense.AccountRef?.value || '(none)'}`,
     `Payee: ${expense.EntityRef?.name || expense.EntityRef?.value || '(none)'}`,
     `Department: ${expense.DepartmentRef?.name || expense.DepartmentRef?.value || '(none)'}`,
+    `Class: ${expense.ClassRef?.name || expense.ClassRef?.value || '(none)'}`,
     `Date: ${expense.TxnDate}`,
     `Ref no.: ${expense.DocNumber || '(none)'}`,
     `Memo: ${expense.PrivateNote || '(none)'}`,
@@ -312,13 +342,14 @@ export async function handleEditExpense(
     memo?: string;
     payment_account?: string;
     department_name?: string;
+    class_name?: string;
     entity_name?: string;
     entity_id?: string;
     lines?: ExpenseLineChange[];
     draft?: boolean;
   }
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
-  const { id, txn_date, memo, payment_account, department_name, entity_name, entity_id, lines: lineChanges, draft = true } = args;
+  const { id, txn_date, memo, payment_account, department_name, class_name, entity_name, entity_id, lines: lineChanges, draft = true } = args;
 
   // Fetch current Purchase
   const current = await promisify<unknown>((cb) =>
@@ -333,6 +364,7 @@ export async function handleEditExpense(
     AccountRef?: { value: string; name?: string };
     EntityRef?: { value: string; name?: string; type?: string };
     DepartmentRef?: { value: string; name?: string };
+    ClassRef?: { value: string; name?: string };
     Line: Array<{
       Id: string;
       Amount: number;
@@ -375,6 +407,9 @@ export async function handleEditExpense(
     if (current.DepartmentRef) {
       updated.DepartmentRef = current.DepartmentRef;
     }
+    if (current.ClassRef) {
+      updated.ClassRef = current.ClassRef;
+    }
     // Copy lines and strip read-only fields
     updated.Line = current.Line.map(line => {
       const { LineNum, ...rest } = line as Record<string, unknown>;
@@ -406,6 +441,17 @@ export async function handleEditExpense(
     );
     if (!match) throw new Error(`Department not found: "${department_name}"`);
     updated.DepartmentRef = { value: match.Id, name: match.FullyQualifiedName || match.Name };
+  }
+
+  // Resolve class if changing
+  if (class_name !== undefined) {
+    const classCache = await getClassCache(client);
+    let match = classCache.byName.get(class_name.toLowerCase());
+    if (!match) match = classCache.items.find(c =>
+      c.FullyQualifiedName?.toLowerCase().includes(class_name.toLowerCase())
+    );
+    if (!match) throw new Error(`Class not found: "${class_name}"`);
+    updated.ClassRef = { value: match.Id, name: match.FullyQualifiedName || match.Name };
   }
 
   // Resolve entity (vendor/payee) if provided
@@ -522,6 +568,10 @@ export async function handleEditExpense(
     if (department_name !== undefined) {
       const newDept = (updated.DepartmentRef as { name?: string })?.name || department_name;
       previewLines.push(`  Department: ${current.DepartmentRef?.name || '(none)'} → ${newDept}`);
+    }
+    if (class_name !== undefined) {
+      const newClass = (updated.ClassRef as { name?: string })?.name || class_name;
+      previewLines.push(`  Class: ${current.ClassRef?.name || '(none)'} → ${newClass}`);
     }
     if (entityInput) {
       const newEntity = (updated.EntityRef as { name?: string })?.name || entityInput;

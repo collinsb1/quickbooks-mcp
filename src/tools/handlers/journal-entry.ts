@@ -5,6 +5,7 @@ import {
   promisify,
   getAccountCache,
   getDepartmentCache,
+  getClassCache,
 } from "../../client/index.js";
 import {
   validateAmount,
@@ -20,6 +21,8 @@ interface JournalEntryLine {
   account_name?: string;
   amount: number;
   posting_type: "Debit" | "Credit";
+  class_id?: string;
+  class_name?: string;
   department_id?: string;
   department_name?: string;
   description?: string;
@@ -30,6 +33,7 @@ interface JournalEntryLineChange {
   account_name?: string;
   amount?: number;
   posting_type?: "Debit" | "Credit";
+  class_name?: string;
   department_name?: string;
   description?: string;
   delete?: boolean;
@@ -47,10 +51,11 @@ export async function handleCreateJournalEntry(
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
   const { txn_date, memo, lines, draft = true, doc_number } = args;
 
-  // Get cached accounts and departments (uses TTL-based cache)
-  const [acctCache, deptCache] = await Promise.all([
+  // Get cached accounts, departments, and classes (uses TTL-based cache)
+  const [acctCache, deptCache, clsCache] = await Promise.all([
     getAccountCache(client),
-    getDepartmentCache(client)
+    getDepartmentCache(client),
+    getClassCache(client),
   ]);
 
   // Helper to lookup account by name or AcctNum from cache
@@ -77,7 +82,7 @@ export async function handleCreateJournalEntry(
     throw new Error(`Account not found: "${name}"`);
   };
 
-  // Helper to lookup department by name from cache
+  // Helper to lookup department (Location) by name from cache
   const lookupDepartment = (name: string): { id: string; name: string } => {
     // Try exact name match (case-insensitive)
     let match = deptCache.byName.get(name.toLowerCase());
@@ -92,14 +97,34 @@ export async function handleCreateJournalEntry(
     if (match) {
       return { id: match.Id, name: match.FullyQualifiedName || match.Name };
     }
-    throw new Error(`Department not found: "${name}"`);
+    throw new Error(`Location not found: "${name}"`);
   };
 
-  // Resolve account and department names to IDs (all lookups are from cache)
+  // Helper to lookup class (Department) by name from cache
+  const lookupClass = (name: string): { id: string; name: string } => {
+    // Try exact name match (case-insensitive)
+    let match = clsCache.byName.get(name.toLowerCase());
+
+    // Try partial match on FullyQualifiedName
+    if (!match) {
+      match = clsCache.items.find(c =>
+        c.FullyQualifiedName?.toLowerCase().includes(name.toLowerCase())
+      );
+    }
+
+    if (match) {
+      return { id: match.Id, name: match.FullyQualifiedName || match.Name };
+    }
+    throw new Error(`Class not found: "${name}". Available classes: ${clsCache.items.map(c => c.Name).join(', ')}`);
+  };
+
+  // Resolve account, class, and department names to IDs (all lookups are from cache)
   const resolvedLines = lines.map((line) => {
     let accountId = line.account_id;
     let accountName = line.account_name;
     let accountNum: string | undefined;
+    let classId = line.class_id;
+    let className = line.class_name;
     let departmentId = line.department_id;
     let departmentName = line.department_name;
 
@@ -113,7 +138,19 @@ export async function handleCreateJournalEntry(
       throw new Error("Each line must have either account_id or account_name");
     }
 
-    // Resolve department
+    // Validate class is required on JE lines
+    if (!classId && !className) {
+      throw new Error(`class_name is required on every JE line (account: ${accountName || accountId}). Provide the QBO Class (department/cost center).`);
+    }
+
+    // Resolve class
+    if (!classId && className) {
+      const cls = lookupClass(className);
+      classId = cls.id;
+      className = cls.name;
+    }
+
+    // Resolve department (Location) — optional
     if (!departmentId && departmentName) {
       const dept = lookupDepartment(departmentName);
       departmentId = dept.id;
@@ -128,6 +165,8 @@ export async function handleCreateJournalEntry(
       account_id: accountId!,
       account_name: accountName,
       account_num: accountNum,
+      class_id: classId,
+      class_name: className,
       department_id: departmentId,
       department_name: departmentName,
       amount_cents: amountCents,
@@ -162,6 +201,11 @@ export async function handleCreateJournalEntry(
           value: line.account_id,
           name: line.account_name
         },
+        ...(line.class_id && {
+          ClassRef: {
+            value: line.class_id
+          }
+        }),
         ...(line.department_id && {
           DepartmentRef: {
             value: line.department_id
@@ -188,7 +232,7 @@ export async function handleCreateJournalEntry(
       "",
       "Lines:",
       ...resolvedLines.map(l =>
-        `  ${l.posting_type.padEnd(6)} ${formatAccount(l)}${l.department_id ? ` [Dept: ${l.department_name || l.department_id}]` : ""}: $${l.amount.toFixed(2)}`
+        `  ${l.posting_type.padEnd(6)} ${formatAccount(l)}${l.class_id ? ` [Class: ${l.class_name || l.class_id}]` : ""}${l.department_id ? ` [Location: ${l.department_name || l.department_id}]` : ""}: $${l.amount.toFixed(2)}`
       ),
       "",
       doc_number
@@ -247,6 +291,7 @@ export async function handleGetJournalEntry(
       JournalEntryLineDetail?: {
         PostingType: string;
         AccountRef: { value: string; name?: string };
+        ClassRef?: { value: string; name?: string };
         DepartmentRef?: { value: string; name?: string };
       };
     }>;
@@ -271,10 +316,12 @@ export async function handleGetJournalEntry(
     const detail = line.JournalEntryLineDetail;
     if (!detail) continue;
     const acctName = detail.AccountRef.name || detail.AccountRef.value;
+    const className = detail.ClassRef?.name || detail.ClassRef?.value;
+    const classStr = className ? ` [Class: ${className}]` : '';
     const deptName = detail.DepartmentRef?.name || detail.DepartmentRef?.value;
-    const deptStr = deptName ? ` [${deptName}]` : '';
+    const deptStr = deptName ? ` [Location: ${deptName}]` : '';
     const descStr = line.Description ? ` "${line.Description}"` : '';
-    lines.push(`  Line ${line.Id}: ${detail.PostingType.padEnd(6)} ${acctName}${deptStr} $${line.Amount.toFixed(2)}${descStr}`);
+    lines.push(`  Line ${line.Id}: ${detail.PostingType.padEnd(6)} ${acctName}${classStr}${deptStr} $${line.Amount.toFixed(2)}${descStr}`);
   }
 
   lines.push('');
@@ -313,6 +360,7 @@ export async function handleEditJournalEntry(
       JournalEntryLineDetail: {
         PostingType: string;
         AccountRef: { value: string; name?: string };
+        ClassRef?: { value: string; name?: string };
         DepartmentRef?: { value: string; name?: string };
       };
     }>;
@@ -355,9 +403,10 @@ export async function handleEditJournalEntry(
 
   if (lineChanges && lineChanges.length > 0) {
     // Get caches for lookups
-    const [acctCache, deptCache] = await Promise.all([
+    const [acctCache, deptCache, clsCache] = await Promise.all([
       getAccountCache(client),
-      getDepartmentCache(client)
+      getDepartmentCache(client),
+      getClassCache(client),
     ]);
 
     // Helper to resolve account
@@ -371,13 +420,23 @@ export async function handleEditJournalEntry(
       return { value: match.Id, name: match.FullyQualifiedName || match.Name };
     };
 
-    // Helper to resolve department
+    // Helper to resolve department (Location)
     const resolveDept = (name: string) => {
       let match = deptCache.byName.get(name.toLowerCase());
       if (!match) match = deptCache.items.find(d =>
         d.FullyQualifiedName?.toLowerCase().includes(name.toLowerCase())
       );
-      if (!match) throw new Error(`Department not found: "${name}"`);
+      if (!match) throw new Error(`Location not found: "${name}"`);
+      return { value: match.Id, name: match.FullyQualifiedName || match.Name };
+    };
+
+    // Helper to resolve class (department/cost center)
+    const resolveClass = (name: string) => {
+      let match = clsCache.byName.get(name.toLowerCase());
+      if (!match) match = clsCache.items.find(c =>
+        c.FullyQualifiedName?.toLowerCase().includes(name.toLowerCase())
+      );
+      if (!match) throw new Error(`Class not found: "${name}". Available classes: ${clsCache.items.map(c => c.Name).join(', ')}`);
       return { value: match.Id, name: match.FullyQualifiedName || match.Name };
     };
 
@@ -405,6 +464,7 @@ export async function handleEditJournalEntry(
           if (change.description !== undefined) line.Description = change.description;
           if (change.posting_type !== undefined) detail.PostingType = change.posting_type;
           if (change.account_name !== undefined) detail.AccountRef = resolveAcct(change.account_name);
+          if (change.class_name !== undefined) detail.ClassRef = resolveClass(change.class_name);
           if (change.department_name !== undefined) detail.DepartmentRef = resolveDept(change.department_name);
 
           line.JournalEntryLineDetail = detail;
@@ -427,6 +487,7 @@ export async function handleEditJournalEntry(
           JournalEntryLineDetail: {
             PostingType: change.posting_type,
             AccountRef: resolveAcct(change.account_name),
+            ...(change.class_name && { ClassRef: resolveClass(change.class_name) }),
             ...(change.department_name && { DepartmentRef: resolveDept(change.department_name) })
           }
         } as typeof finalLines[0];
@@ -473,8 +534,9 @@ export async function handleEditJournalEntry(
       for (const line of updated.Line as typeof finalLines) {
         const detail = line.JournalEntryLineDetail;
         const acctName = detail.AccountRef.name || detail.AccountRef.value;
-        const deptStr = detail.DepartmentRef?.name ? ` [${detail.DepartmentRef.name}]` : '';
-        previewLines.push(`  ${detail.PostingType.padEnd(6)} ${acctName}${deptStr}: $${line.Amount.toFixed(2)}`);
+        const classStr = detail.ClassRef?.name ? ` [Class: ${detail.ClassRef.name}]` : '';
+        const deptStr = detail.DepartmentRef?.name ? ` [Location: ${detail.DepartmentRef.name}]` : '';
+        previewLines.push(`  ${detail.PostingType.padEnd(6)} ${acctName}${classStr}${deptStr}: $${line.Amount.toFixed(2)}`);
       }
     }
 

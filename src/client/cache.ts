@@ -4,11 +4,13 @@ import QuickBooks from "node-quickbooks";
 import { promisify } from "./promisify.js";
 import {
   CachedAccount,
+  CachedClass,
   CachedCustomer,
   CachedDepartment,
   CachedVendor,
   CachedItem,
   AccountCache,
+  ClassCache,
   DepartmentCache,
   VendorCache,
   QBQueryResponse,
@@ -19,6 +21,7 @@ const LOOKUP_CACHE_TTL_MS = 15 * 60 * 1000;
 
 // Module-level cache state
 let departmentCache: DepartmentCache | null = null;
+let classCache: ClassCache | null = null;
 let accountCache: AccountCache | null = null;
 let vendorCache: VendorCache | null = null;
 // Item cache: lazy per-entry lookup (not bulk-loaded like others)
@@ -30,6 +33,7 @@ const customerCacheByName = new Map<string, CachedCustomer>(); // lowercase key
 
 export function clearLookupCache(): void {
   departmentCache = null;
+  classCache = null;
   accountCache = null;
   vendorCache = null;
   itemCacheById.clear();
@@ -62,6 +66,25 @@ export async function getDepartmentCache(client: QuickBooks): Promise<Department
 
   departmentCache = { items, byId, byName, fetchedAt: Date.now() };
   return departmentCache;
+}
+
+export async function getClassCache(client: QuickBooks): Promise<ClassCache> {
+  if (classCache && (Date.now() - classCache.fetchedAt) < LOOKUP_CACHE_TTL_MS) {
+    return classCache;
+  }
+
+  const result = await promisify<unknown>((cb) => client.findClasses({ fetchAll: true }, cb));
+  const items = extractQueryResults<CachedClass>(result, 'Class');
+
+  const byId = new Map<string, CachedClass>();
+  const byName = new Map<string, CachedClass>();
+  for (const cls of items) {
+    byId.set(cls.Id, cls);
+    byName.set(cls.Name.toLowerCase(), cls);
+  }
+
+  classCache = { items, byId, byName, fetchedAt: Date.now() };
+  return classCache;
 }
 
 export async function getAccountCache(client: QuickBooks): Promise<AccountCache> {
@@ -225,6 +248,29 @@ export async function resolveDepartmentId(client: QuickBooks, department: string
 
   // If nothing found, return as-is (let API handle error)
   return department;
+}
+
+// Helper to resolve class name to ID using cache
+// Accepts: internal ID (e.g., "5"), name (e.g., "Engineering"), or partial match
+export async function resolveClassId(client: QuickBooks, cls: string): Promise<string> {
+  const cache = await getClassCache(client);
+
+  // Try exact ID match first
+  const byId = cache.byId.get(cls);
+  if (byId) return byId.Id;
+
+  // Try exact name match (case-insensitive)
+  const byName = cache.byName.get(cls.toLowerCase());
+  if (byName) return byName.Id;
+
+  // Try partial/fuzzy match on FullyQualifiedName
+  const byPartial = cache.items.find(c =>
+    c.FullyQualifiedName?.toLowerCase().includes(cls.toLowerCase())
+  );
+  if (byPartial) return byPartial.Id;
+
+  // If nothing found, return as-is (let API handle error)
+  return cls;
 }
 
 // Resolve customer by name or ID using lazy per-entry cache

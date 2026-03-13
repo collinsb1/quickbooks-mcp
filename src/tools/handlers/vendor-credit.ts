@@ -5,6 +5,7 @@ import {
   promisify,
   getAccountCache,
   getDepartmentCache,
+  getClassCache,
   getVendorCache,
 } from "../../client/index.js";
 import { validateAmount, toDollars, formatDollars, sumCents, outputReport } from "../../utils/index.js";
@@ -32,6 +33,7 @@ export async function handleCreateVendorCredit(
     txn_date: string;
     department_name?: string;
     department_id?: string;
+    class_name?: string;
     ap_account?: string;
     memo?: string;
     doc_number?: string;
@@ -41,7 +43,7 @@ export async function handleCreateVendorCredit(
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
   const {
     vendor_name, vendor_id, txn_date,
-    department_name, department_id, ap_account,
+    department_name, department_id, class_name, ap_account,
     memo, doc_number, lines, draft = true,
   } = args;
 
@@ -50,9 +52,10 @@ export async function handleCreateVendorCredit(
   }
 
   // Get cached lookups
-  const [acctCache, deptCache, vendorCacheData] = await Promise.all([
+  const [acctCache, deptCache, classCacheData, vendorCacheData] = await Promise.all([
     getAccountCache(client),
     getDepartmentCache(client),
+    getClassCache(client),
     getVendorCache(client),
   ]);
 
@@ -116,6 +119,29 @@ export async function handleCreateVendorCredit(
     }
   }
 
+  // Resolve class (header-level, optional)
+  let classRef: { value: string; name: string } | undefined;
+  if (class_name) {
+    const byId = classCacheData.byId.get(class_name);
+    if (byId) {
+      classRef = { value: byId.Id, name: byId.FullyQualifiedName || byId.Name };
+    } else {
+      const byName = classCacheData.byName.get(class_name.toLowerCase());
+      if (byName) {
+        classRef = { value: byName.Id, name: byName.FullyQualifiedName || byName.Name };
+      } else {
+        const byPartial = classCacheData.items.find(c =>
+          c.FullyQualifiedName?.toLowerCase().includes(class_name.toLowerCase())
+        );
+        if (byPartial) {
+          classRef = { value: byPartial.Id, name: byPartial.FullyQualifiedName || byPartial.Name };
+        } else {
+          throw new Error(`Class not found: "${class_name}"`);
+        }
+      }
+    }
+  }
+
   // Resolve AP account if specified
   let apAccountRef: { value: string; name: string } | undefined;
   if (ap_account) {
@@ -160,6 +186,7 @@ export async function handleCreateVendorCredit(
     ...(memo && { PrivateNote: memo }),
     ...(doc_number && { DocNumber: doc_number }),
     ...(departmentRef && { DepartmentRef: departmentRef }),
+    ...(classRef && { ClassRef: classRef }),
     ...(apAccountRef && { APAccountRef: apAccountRef }),
     Line: resolvedLines.map((line) => ({
       Amount: line.amount,
@@ -188,6 +215,7 @@ export async function handleCreateVendorCredit(
       `Date: ${txn_date}`,
       `Ref no.: ${doc_number || "(auto-assign)"}`,
       `Department: ${departmentRef?.name || "(none)"}`,
+      `Class: ${classRef?.name || "(none)"}`,
       `AP Account: ${apAccountRef?.name || "(default)"}`,
       `Memo: ${memo || "(none)"}`,
       `Total: $${formatDollars(totalCents)}`,
@@ -246,6 +274,7 @@ export async function handleGetVendorCredit(
     VendorRef?: { value: string; name?: string };
     APAccountRef?: { value: string; name?: string };
     DepartmentRef?: { value: string; name?: string };
+    ClassRef?: { value: string; name?: string };
     Line?: Array<{
       Id: string;
       Amount: number;
@@ -271,6 +300,7 @@ export async function handleGetVendorCredit(
     `Memo: ${vc.PrivateNote || '(none)'}`,
     `AP Account: ${vc.APAccountRef?.name || vc.APAccountRef?.value || 'Accounts Payable'}`,
     `Department: ${vc.DepartmentRef?.name || vc.DepartmentRef?.value || '(none)'}`,
+    `Class: ${vc.ClassRef?.name || vc.ClassRef?.value || '(none)'}`,
     `Total: $${(vc.TotalAmt || 0).toFixed(2)}`,
     '',
     'Lines:',
@@ -300,11 +330,12 @@ export async function handleEditVendorCredit(
     txn_date?: string;
     memo?: string;
     doc_number?: string;
+    class_name?: string;
     lines?: VendorCreditLineChange[];
     draft?: boolean;
   }
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
-  const { id, vendor_name, txn_date, memo, doc_number, lines: lineChanges, draft = true } = args;
+  const { id, vendor_name, txn_date, memo, doc_number, class_name, lines: lineChanges, draft = true } = args;
 
   // Fetch current VendorCredit
   const current = await promisify<unknown>((cb) =>
@@ -317,6 +348,7 @@ export async function handleEditVendorCredit(
     PrivateNote?: string;
     VendorRef: { value: string; name?: string };
     DepartmentRef?: { value: string; name?: string };
+    ClassRef?: { value: string; name?: string };
     Line: Array<{
       Id: string;
       Amount: number;
@@ -352,6 +384,9 @@ export async function handleEditVendorCredit(
     if (current.DepartmentRef) {
       updated.DepartmentRef = current.DepartmentRef;
     }
+    if (current.ClassRef) {
+      updated.ClassRef = current.ClassRef;
+    }
     // Copy lines and strip read-only fields
     updated.Line = current.Line.map(line => {
       const { LineNum, ...rest } = line as Record<string, unknown>;
@@ -381,6 +416,17 @@ export async function handleEditVendorCredit(
   if (txn_date !== undefined) updated.TxnDate = txn_date;
   if (memo !== undefined) updated.PrivateNote = memo;
   if (doc_number !== undefined) updated.DocNumber = doc_number;
+
+  // Resolve class if changing
+  if (class_name !== undefined) {
+    const classCache = await getClassCache(client);
+    let match = classCache.byName.get(class_name.toLowerCase());
+    if (!match) match = classCache.items.find(c =>
+      c.FullyQualifiedName?.toLowerCase().includes(class_name.toLowerCase())
+    );
+    if (!match) throw new Error(`Class not found: "${class_name}"`);
+    updated.ClassRef = { value: match.Id, name: match.FullyQualifiedName || match.Name };
+  }
 
   // Process line changes if provided
   let finalLines = [...((updated.Line as typeof current.Line) || current.Line)];
@@ -463,6 +509,10 @@ export async function handleEditVendorCredit(
     if (txn_date !== undefined) previewLines.push(`  Date: ${current.TxnDate} → ${txn_date}`);
     if (memo !== undefined) previewLines.push(`  Memo: ${current.PrivateNote || '(none)'} → ${memo}`);
     if (doc_number !== undefined) previewLines.push(`  Ref no.: ${current.DocNumber || '(none)'} → ${doc_number}`);
+    if (class_name !== undefined) {
+      const newClass = (updated.ClassRef as { name?: string })?.name || class_name;
+      previewLines.push(`  Class: ${current.ClassRef?.name || '(none)'} → ${newClass}`);
+    }
 
     if (updated.Line) {
       previewLines.push('');

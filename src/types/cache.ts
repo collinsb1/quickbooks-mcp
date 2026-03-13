@@ -60,3 +60,16 @@ export interface CachedItem {
   Active?: boolean;
   fetchedAt: number;   // per-entry TTL for lazy cache
 }
+
+export interface CachedClass {
+  Id: string;
+  Name: string;
+  FullyQualifiedName?: string;
+}
+
+export interface ClassCache {
+  items: CachedClass[];
+  byId: Map<string, CachedClass>;
+  byName: Map<string, CachedClass>;  // lowercase key
+  fetchedAt: number;
+}
