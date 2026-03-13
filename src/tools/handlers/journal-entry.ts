@@ -216,15 +216,6 @@ export async function handleCreateJournalEntry(
     }))
   };
 
-  // doc_number is required when actually posting (draft=false)
-  if (!draft && !doc_number) {
-    throw new Error(
-      "doc_number (JE #) is required when posting a Journal Entry (draft=false). " +
-      "QBO assigns sequential numbers, but the JE # must be specified explicitly. " +
-      "Set draft=true to preview without a number."
-    );
-  }
-
   if (draft) {
     // Preview mode - return what would be created
     const formatAccount = (l: typeof resolvedLines[0]) => {
