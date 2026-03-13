@@ -1,0 +1,77 @@
+export interface CachedDepartment {
+    Id: string;
+    Name: string;
+    FullyQualifiedName?: string;
+}
+export interface CachedAccount {
+    Id: string;
+    Name: string;
+    FullyQualifiedName?: string;
+    AcctNum?: string;
+    AccountType?: string;
+    CurrentBalance?: number;
+    Active?: boolean;
+}
+export interface DepartmentCache {
+    items: CachedDepartment[];
+    byId: Map<string, CachedDepartment>;
+    byName: Map<string, CachedDepartment>;
+    fetchedAt: number;
+}
+export interface AccountCache {
+    items: CachedAccount[];
+    byId: Map<string, CachedAccount>;
+    byName: Map<string, CachedAccount>;
+    byAcctNum: Map<string, CachedAccount>;
+    fetchedAt: number;
+}
+export interface CachedVendor {
+    Id: string;
+    DisplayName: string;
+    Active?: boolean;
+}
+export interface VendorCache {
+    items: CachedVendor[];
+    byId: Map<string, CachedVendor>;
+    byName: Map<string, CachedVendor>;
+    fetchedAt: number;
+}
+export interface CachedCustomer {
+    Id: string;
+    DisplayName: string;
+    Active?: boolean;
+    fetchedAt: number;
+}
+export interface CachedItem {
+    Id: string;
+    Name: string;
+    FullyQualifiedName?: string;
+    Type?: string;
+    UnitPrice?: number;
+    Active?: boolean;
+    fetchedAt: number;
+}
+export interface CachedClass {
+    Id: string;
+    Name: string;
+    FullyQualifiedName?: string;
+}
+export interface ClassCache {
+    items: CachedClass[];
+    byId: Map<string, CachedClass>;
+    byName: Map<string, CachedClass>;
+    fetchedAt: number;
+}
+export interface CachedEntity {
+    Id: string;
+    DisplayName: string;
+    Type: 'Customer' | 'Vendor';
+    Active?: boolean;
+}
+export interface EntityCache {
+    items: CachedEntity[];
+    byId: Map<string, CachedEntity>;
+    byName: Map<string, CachedEntity>;
+    fetchedAt: number;
+}
+//# sourceMappingURL=cache.d.ts.map

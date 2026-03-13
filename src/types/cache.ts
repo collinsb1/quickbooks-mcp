@@ -60,3 +60,31 @@ export interface CachedItem {
   Active?: boolean;
   fetchedAt: number;   // per-entry TTL for lazy cache
 }
+
+export interface CachedClass {
+  Id: string;
+  Name: string;
+  FullyQualifiedName?: string;
+}
+
+export interface ClassCache {
+  items: CachedClass[];
+  byId: Map<string, CachedClass>;
+  byName: Map<string, CachedClass>;  // lowercase key
+  fetchedAt: number;
+}
+
+// Unified entity cache (Customers + Vendors merged — mirrors QBO's "Name" field on JEs)
+export interface CachedEntity {
+  Id: string;
+  DisplayName: string;
+  Type: 'Customer' | 'Vendor';
+  Active?: boolean;
+}
+
+export interface EntityCache {
+  items: CachedEntity[];
+  byId: Map<string, CachedEntity>;
+  byName: Map<string, CachedEntity>;  // lowercase key
+  fetchedAt: number;
+}

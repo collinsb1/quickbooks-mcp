@@ -5,6 +5,7 @@ import {
   promisify,
   getAccountCache,
   getDepartmentCache,
+  getClassCache,
   resolveItem,
   resolveCustomer,
 } from "../../client/index.js";
@@ -39,6 +40,7 @@ export async function handleCreateSalesReceipt(
     deposit_to_account?: string;
     department_name?: string;
     department_id?: string;
+    class_name?: string;
     memo?: string;
     doc_number?: string;
     lines: CreateSalesReceiptLine[];
@@ -47,7 +49,7 @@ export async function handleCreateSalesReceipt(
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
   const {
     txn_date, customer_name, customer_id,
-    deposit_to_account, department_name, department_id,
+    deposit_to_account, department_name, department_id, class_name,
     memo, doc_number, lines, draft = true,
   } = args;
 
@@ -101,6 +103,30 @@ export async function handleCreateSalesReceipt(
     }
   }
 
+  // Resolve class (header-level, optional)
+  let classRef: { value: string; name: string } | undefined;
+  if (class_name) {
+    const classCacheData = await getClassCache(client);
+    const byId = classCacheData.byId.get(class_name);
+    if (byId) {
+      classRef = { value: byId.Id, name: byId.FullyQualifiedName || byId.Name };
+    } else {
+      const byName = classCacheData.byName.get(class_name.toLowerCase());
+      if (byName) {
+        classRef = { value: byName.Id, name: byName.FullyQualifiedName || byName.Name };
+      } else {
+        const byPartial = classCacheData.items.find(c =>
+          c.FullyQualifiedName?.toLowerCase().includes(class_name.toLowerCase())
+        );
+        if (byPartial) {
+          classRef = { value: byPartial.Id, name: byPartial.FullyQualifiedName || byPartial.Name };
+        } else {
+          throw new Error(`Class not found: "${class_name}"`);
+        }
+      }
+    }
+  }
+
   // Resolve lines
   const resolvedLines = await Promise.all(lines.map(async (line) => {
     const itemInput = line.item_name || line.item_id;
@@ -145,6 +171,7 @@ export async function handleCreateSalesReceipt(
     ...(customerRef && { CustomerRef: customerRef }),
     ...(depositAccountRef && { DepositToAccountRef: depositAccountRef }),
     ...(departmentRef && { DepartmentRef: departmentRef }),
+    ...(classRef && { ClassRef: classRef }),
     ...(memo && { PrivateNote: memo }),
     ...(doc_number && { DocNumber: doc_number }),
     Line: resolvedLines.map((line) => ({
@@ -168,6 +195,7 @@ export async function handleCreateSalesReceipt(
       `Ref no.: ${doc_number || "(auto-assign)"}`,
       `Deposit To: ${depositAccountRef?.name || "(default)"}`,
       `Department: ${departmentRef?.name || "(none)"}`,
+      `Class: ${classRef?.name || "(none)"}`,
       `Memo: ${memo || "(none)"}`,
       `Total: $${formatDollars(totalCents)}`,
       "",
@@ -225,6 +253,7 @@ export async function handleGetSalesReceipt(
     CustomerRef?: { value: string; name?: string };
     DepositToAccountRef?: { value: string; name?: string };
     DepartmentRef?: { value: string; name?: string };
+    ClassRef?: { value: string; name?: string };
     Line?: Array<{
       Id: string;
       Amount: number;
@@ -253,6 +282,7 @@ export async function handleGetSalesReceipt(
     `Ref no.: ${salesReceipt.DocNumber || '(none)'}`,
     `Deposit To: ${salesReceipt.DepositToAccountRef?.name || salesReceipt.DepositToAccountRef?.value || '(default)'}`,
     `Department: ${salesReceipt.DepartmentRef?.name || salesReceipt.DepartmentRef?.value || '(none)'}`,
+    `Class: ${salesReceipt.ClassRef?.name || salesReceipt.ClassRef?.value || '(none)'}`,
     `Memo: ${salesReceipt.PrivateNote || '(none)'}`,
     `Total: $${(salesReceipt.TotalAmt || 0).toFixed(2)}`,
     '',
@@ -287,11 +317,12 @@ export async function handleEditSalesReceipt(
     memo?: string;
     deposit_to_account?: string;
     department_name?: string;
+    class_name?: string;
     lines?: SalesReceiptLineChange[];
     draft?: boolean;
   }
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
-  const { id, txn_date, memo, deposit_to_account, department_name, lines: lineChanges, draft = true } = args;
+  const { id, txn_date, memo, deposit_to_account, department_name, class_name, lines: lineChanges, draft = true } = args;
 
   // Fetch current SalesReceipt
   const current = await promisify<unknown>((cb) =>
@@ -304,6 +335,7 @@ export async function handleEditSalesReceipt(
     PrivateNote?: string;
     DepositToAccountRef?: { value: string; name?: string };
     DepartmentRef?: { value: string; name?: string };
+    ClassRef?: { value: string; name?: string };
     Line: Array<{
       Id: string;
       Amount: number;
@@ -345,6 +377,9 @@ export async function handleEditSalesReceipt(
     if (current.DepartmentRef) {
       updated.DepartmentRef = current.DepartmentRef;
     }
+    if (current.ClassRef) {
+      updated.ClassRef = current.ClassRef;
+    }
     // Copy lines and strip read-only fields
     updated.Line = current.Line.map(line => {
       const { LineNum, ...rest } = line as Record<string, unknown>;
@@ -377,6 +412,17 @@ export async function handleEditSalesReceipt(
     );
     if (!match) throw new Error(`Department not found: "${department_name}"`);
     updated.DepartmentRef = { value: match.Id, name: match.FullyQualifiedName || match.Name };
+  }
+
+  // Resolve class if changing
+  if (class_name !== undefined) {
+    const classCache = await getClassCache(client);
+    let match = classCache.byName.get(class_name.toLowerCase());
+    if (!match) match = classCache.items.find(c =>
+      c.FullyQualifiedName?.toLowerCase().includes(class_name.toLowerCase())
+    );
+    if (!match) throw new Error(`Class not found: "${class_name}"`);
+    updated.ClassRef = { value: match.Id, name: match.FullyQualifiedName || match.Name };
   }
 
   // Process line changes if provided
@@ -480,6 +526,10 @@ export async function handleEditSalesReceipt(
     if (department_name !== undefined) {
       const newDept = (updated.DepartmentRef as { name?: string })?.name || department_name;
       previewLines.push(`  Department: ${current.DepartmentRef?.name || '(none)'} → ${newDept}`);
+    }
+    if (class_name !== undefined) {
+      const newClass = (updated.ClassRef as { name?: string })?.name || class_name;
+      previewLines.push(`  Class: ${current.ClassRef?.name || '(none)'} → ${newClass}`);
     }
 
     if (updated.Line) {

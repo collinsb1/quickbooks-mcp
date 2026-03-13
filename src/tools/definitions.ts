@@ -85,6 +85,10 @@ export const toolDefinitions = [
           type: "string",
           description: "Filter to a specific department/location ID",
         },
+        class_name: {
+          type: "string",
+          description: "Filter to a specific QBO Class (department/cost center, e.g., 'Engineering', 'Sales'). Will be resolved to ID.",
+        },
         accounting_method: {
           type: "string",
           description: "Accounting method: 'Accrual' (default) or 'Cash'",
@@ -110,6 +114,10 @@ export const toolDefinitions = [
         department: {
           type: "string",
           description: "Filter to a specific department/location ID",
+        },
+        class_name: {
+          type: "string",
+          description: "Filter to a specific QBO Class (department/cost center, e.g., 'Engineering', 'Sales'). Will be resolved to ID.",
         },
         accounting_method: {
           type: "string",
@@ -242,13 +250,25 @@ export const toolDefinitions = [
           type: "string",
           description: "Transaction date in YYYY-MM-DD format",
         },
+        description: {
+          type: "string",
+          description: "Transaction-level description applied to all lines (required). This is the memo/description visible on the journal entry.",
+        },
+        entity_name: {
+          type: "string",
+          description: "Name of the Customer or Vendor associated with this journal entry (required). Searched against QBO's combined Customer+Vendor list. If an exact match is found the entity is linked; if a fuzzy match is found you will be prompted to confirm; if no match is found the JE is posted without an entity.",
+        },
+        confirm_entity: {
+          type: "boolean",
+          description: "Set to true to post without the Entity field when a fuzzy match was detected but you want to proceed anyway (e.g. the entity name is intentionally different). Default: false.",
+        },
         memo: {
           type: "string",
           description: "Private memo for the journal entry",
         },
         lines: {
           type: "array",
-          description: "Array of line items. Provide account_name OR account_id (name preferred). Optionally provide department_name OR department_id.",
+          description: "Array of line items. Provide account_name OR account_id (name preferred). class_name is REQUIRED on every line (QBO Class = department/cost center). Optionally provide department_name OR department_id (Location).",
           items: {
             type: "object",
             properties: {
@@ -269,20 +289,24 @@ export const toolDefinitions = [
                 enum: ["Debit", "Credit"],
                 description: "Whether this line is a Debit or Credit",
               },
+              class_name: {
+                type: "string",
+                description: "QBO Class name (department/cost center, e.g., 'Engineering', 'Sales'). REQUIRED on every JE line. Will be looked up to get ID.",
+              },
+              class_id: {
+                type: "string",
+                description: "QBO Class ID (use if you already know it, otherwise use class_name)",
+              },
               department_name: {
                 type: "string",
-                description: "Department/Location name (e.g., '20358', 'Santa Rosa'). Will be looked up to get ID.",
+                description: "Location name (e.g., 'Non-US'). Optional — leave blank for U.S. entries. Will be looked up to get ID.",
               },
               department_id: {
                 type: "string",
-                description: "Department/Location ID (use if you already know it, otherwise use department_name)",
-              },
-              description: {
-                type: "string",
-                description: "Line description (optional)",
+                description: "Location ID (use if you already know it, otherwise use department_name)",
               },
             },
-            required: ["amount", "posting_type"],
+            required: ["amount", "posting_type", "class_name"],
           },
         },
         draft: {
@@ -294,7 +318,7 @@ export const toolDefinitions = [
           description: "Journal number (shown as 'Journal no.' in QuickBooks). If not specified, QuickBooks will auto-assign the next number.",
         },
       },
-      required: ["txn_date", "lines"],
+      required: ["txn_date", "description", "entity_name", "lines"],
     },
   },
   {
@@ -324,6 +348,18 @@ export const toolDefinitions = [
         txn_date: {
           type: "string",
           description: "New transaction date in YYYY-MM-DD format (optional)",
+        },
+        description: {
+          type: "string",
+          description: "New transaction-level description to apply to all lines (optional). Replaces the description on every line.",
+        },
+        entity_name: {
+          type: "string",
+          description: "New Customer or Vendor name to associate with the journal entry (optional). Same fuzzy-match logic as create: exact match links the entity, fuzzy match prompts confirmation, no match posts without entity.",
+        },
+        confirm_entity: {
+          type: "boolean",
+          description: "Set to true to post without the Entity field when a fuzzy match was detected but you want to proceed anyway. Default: false.",
         },
         memo: {
           type: "string",
@@ -356,13 +392,13 @@ export const toolDefinitions = [
                 enum: ["Debit", "Credit"],
                 description: "Whether this line is a Debit or Credit",
               },
+              class_name: {
+                type: "string",
+                description: "QBO Class name (department/cost center, e.g., 'Engineering', 'Sales'). Auto-resolved to ID.",
+              },
               department_name: {
                 type: "string",
-                description: "Department/Location name (auto-resolved to ID)",
-              },
-              description: {
-                type: "string",
-                description: "Line description",
+                description: "Location name (auto-resolved to ID)",
               },
               delete: {
                 type: "boolean",
@@ -408,6 +444,10 @@ export const toolDefinitions = [
         department_id: {
           type: "string",
           description: "Header-level department/location ID (use if you already know it, otherwise use department_name)",
+        },
+        class_name: {
+          type: "string",
+          description: "QBO Class for cost-center tracking (e.g., 'Engineering', 'Sales'). Header-level — applies to whole transaction. Resolved by name or ID.",
         },
         ap_account: {
           type: "string",
@@ -498,6 +538,10 @@ export const toolDefinitions = [
         department_name: {
           type: "string",
           description: "Header-level department/location name (auto-resolved to ID)",
+        },
+        class_name: {
+          type: "string",
+          description: "QBO Class for cost-center tracking (e.g., 'Engineering', 'Sales'). Header-level — applies to whole transaction. Resolved by name or ID.",
         },
         doc_number: {
           type: "string",
@@ -609,6 +653,10 @@ export const toolDefinitions = [
           type: "string",
           description: "Header-level department/location name (auto-resolved to ID)",
         },
+        class_name: {
+          type: "string",
+          description: "QBO Class for cost-center tracking (e.g., 'Engineering', 'Sales'). Header-level — applies to whole transaction. Resolved by name or ID.",
+        },
         entity_name: {
           type: "string",
           description: "Payee/vendor display name (e.g., 'Cozzini Bros., Inc.'). Will be looked up to get ID.",
@@ -659,6 +707,10 @@ export const toolDefinitions = [
         department_id: {
           type: "string",
           description: "Header-level department/location ID (use if you already know it, otherwise use department_name)",
+        },
+        class_name: {
+          type: "string",
+          description: "QBO Class for cost-center tracking (e.g., 'Engineering', 'Sales'). Header-level — applies to whole transaction. Resolved by name or ID.",
         },
         memo: {
           type: "string",
@@ -742,6 +794,10 @@ export const toolDefinitions = [
           type: "string",
           description: "Header-level department/location name (auto-resolved to ID)",
         },
+        class_name: {
+          type: "string",
+          description: "QBO Class for cost-center tracking (e.g., 'Engineering', 'Sales'). Header-level — applies to whole transaction. Resolved by name or ID.",
+        },
         lines: {
           type: "array",
           description: "Line modifications. Provide line_id to update existing line, omit to add new line.",
@@ -820,6 +876,10 @@ export const toolDefinitions = [
         department_id: {
           type: "string",
           description: "Header-level department/location ID (use if you already know it, otherwise use department_name)",
+        },
+        class_name: {
+          type: "string",
+          description: "QBO Class for cost-center tracking (e.g., 'Engineering', 'Sales'). Header-level — applies to whole transaction. Resolved by name or ID.",
         },
         memo: {
           type: "string",
@@ -900,6 +960,10 @@ export const toolDefinitions = [
         department_id: {
           type: "string",
           description: "Header-level department/location ID (use if you already know it, otherwise use department_name)",
+        },
+        class_name: {
+          type: "string",
+          description: "QBO Class for cost-center tracking (e.g., 'Engineering', 'Sales'). Header-level — applies to whole transaction. Resolved by name or ID.",
         },
         memo: {
           type: "string",
@@ -1034,6 +1098,10 @@ export const toolDefinitions = [
         department_name: {
           type: "string",
           description: "Header-level department/location name (auto-resolved to ID)",
+        },
+        class_name: {
+          type: "string",
+          description: "QBO Class for cost-center tracking (e.g., 'Engineering', 'Sales'). Header-level — applies to whole transaction. Resolved by name or ID.",
         },
         lines: {
           type: "array",
@@ -1256,6 +1324,10 @@ export const toolDefinitions = [
           type: "string",
           description: "Header-level department/location ID (use if you already know it, otherwise use department_name)",
         },
+        class_name: {
+          type: "string",
+          description: "QBO Class for cost-center tracking (e.g., 'Engineering', 'Sales'). Header-level — applies to whole transaction. Resolved by name or ID.",
+        },
         ap_account: {
           type: "string",
           description: "Accounts Payable account name or number (optional, defaults to standard AP)",
@@ -1341,6 +1413,10 @@ export const toolDefinitions = [
         doc_number: {
           type: "string",
           description: "New reference number (optional)",
+        },
+        class_name: {
+          type: "string",
+          description: "QBO Class for cost-center tracking (e.g., 'Engineering', 'Sales'). Header-level — applies to whole transaction. Resolved by name or ID.",
         },
         lines: {
           type: "array",

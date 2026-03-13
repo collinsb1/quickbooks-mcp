@@ -1,0 +1,1 @@
+{"version":3,"file":"company.d.ts","sourceRoot":"","sources":["../../../src/tools/handlers/company.ts"],"names":[],"mappings":"AAEA,OAAO,UAAU,MAAM,iBAAiB,CAAC;AAGzC,wBAAsB,oBAAoB,CAAC,MAAM,EAAE,UAAU,GAAG,OAAO,CAAC;IAAE,OAAO,EAAE,KAAK,CAAC;QAAE,IAAI,EAAE,MAAM,CAAC;QAAC,IAAI,EAAE,MAAM,CAAA;KAAE,CAAC,CAAA;CAAE,CAAC,CAQ1H"}

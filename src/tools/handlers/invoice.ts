@@ -5,6 +5,7 @@ import {
   promisify,
   getAccountCache,
   getDepartmentCache,
+  getClassCache,
   resolveItem,
   resolveCustomer,
 } from "../../client/index.js";
@@ -39,6 +40,7 @@ export async function handleCreateInvoice(
     due_date?: string;
     department_name?: string;
     department_id?: string;
+    class_name?: string;
     memo?: string;
     customer_memo?: string;
     bill_email?: string;
@@ -52,7 +54,7 @@ export async function handleCreateInvoice(
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
   const {
     txn_date, customer_name, customer_id,
-    due_date, department_name, department_id,
+    due_date, department_name, department_id, class_name,
     memo, customer_memo, bill_email, sales_term_ref,
     allow_online_credit_card_payment, allow_online_ach_payment,
     doc_number, lines, draft = true,
@@ -93,6 +95,30 @@ export async function handleCreateInvoice(
           departmentRef = { value: byPartial.Id, name: byPartial.FullyQualifiedName || byPartial.Name };
         } else {
           throw new Error(`Department not found: "${deptInput}"`);
+        }
+      }
+    }
+  }
+
+  // Resolve class (header-level, optional)
+  let classRef: { value: string; name: string } | undefined;
+  if (class_name) {
+    const classCacheData = await getClassCache(client);
+    const byId = classCacheData.byId.get(class_name);
+    if (byId) {
+      classRef = { value: byId.Id, name: byId.FullyQualifiedName || byId.Name };
+    } else {
+      const byName = classCacheData.byName.get(class_name.toLowerCase());
+      if (byName) {
+        classRef = { value: byName.Id, name: byName.FullyQualifiedName || byName.Name };
+      } else {
+        const byPartial = classCacheData.items.find(c =>
+          c.FullyQualifiedName?.toLowerCase().includes(class_name.toLowerCase())
+        );
+        if (byPartial) {
+          classRef = { value: byPartial.Id, name: byPartial.FullyQualifiedName || byPartial.Name };
+        } else {
+          throw new Error(`Class not found: "${class_name}"`);
         }
       }
     }
@@ -160,6 +186,7 @@ export async function handleCreateInvoice(
     CustomerRef: customerRef,
     ...(due_date && { DueDate: due_date }),
     ...(departmentRef && { DepartmentRef: departmentRef }),
+    ...(classRef && { ClassRef: classRef }),
     ...(salesTermRef && { SalesTermRef: salesTermRef }),
     ...(memo && { PrivateNote: memo }),
     ...(customer_memo && { CustomerMemo: { value: customer_memo } }),
@@ -189,6 +216,7 @@ export async function handleCreateInvoice(
       `Terms: ${salesTermRef?.name || "(none)"}`,
       `Ref no.: ${doc_number || "(auto-assign)"}`,
       `Department: ${departmentRef?.name || "(none)"}`,
+      `Class: ${classRef?.name || "(none)"}`,
       `Memo: ${memo || "(none)"}`,
       `Customer Memo: ${customer_memo || "(none)"}`,
       `Bill Email: ${bill_email || "(none)"}`,
@@ -252,6 +280,7 @@ export async function handleGetInvoice(
     Balance?: number;
     CustomerRef?: { value: string; name?: string };
     DepartmentRef?: { value: string; name?: string };
+    ClassRef?: { value: string; name?: string };
     BillEmail?: { Address?: string };
     CustomerMemo?: { value?: string };
     EmailStatus?: string;
@@ -287,6 +316,7 @@ export async function handleGetInvoice(
     `Due Date: ${invoice.DueDate || '(none)'}`,
     `Ref no.: ${invoice.DocNumber || '(none)'}`,
     `Department: ${invoice.DepartmentRef?.name || invoice.DepartmentRef?.value || '(none)'}`,
+    `Class: ${invoice.ClassRef?.name || invoice.ClassRef?.value || '(none)'}`,
     `Terms: ${invoice.SalesTermRef?.name || '(none)'}`,
     `Memo: ${invoice.PrivateNote || '(none)'}`,
     `Customer Memo: ${invoice.CustomerMemo?.value || '(none)'}`,
@@ -343,6 +373,7 @@ export async function handleEditInvoice(
     allow_online_ach_payment?: boolean;
     customer_name?: string;
     department_name?: string;
+    class_name?: string;
     lines?: InvoiceLineChange[];
     draft?: boolean;
   }
@@ -350,7 +381,7 @@ export async function handleEditInvoice(
   const {
     id, txn_date, due_date, memo, customer_memo, bill_email,
     sales_term_ref, allow_online_credit_card_payment, allow_online_ach_payment,
-    customer_name, department_name, lines: lineChanges, draft = true,
+    customer_name, department_name, class_name, lines: lineChanges, draft = true,
   } = args;
 
   // Fetch current Invoice
@@ -365,6 +396,7 @@ export async function handleEditInvoice(
     PrivateNote?: string;
     CustomerRef?: { value: string; name?: string };
     DepartmentRef?: { value: string; name?: string };
+    ClassRef?: { value: string; name?: string };
     CustomerMemo?: { value?: string };
     BillEmail?: { Address?: string };
     SalesTermRef?: { value: string; name?: string };
@@ -408,6 +440,9 @@ export async function handleEditInvoice(
     }
     if (current.DepartmentRef) {
       updated.DepartmentRef = current.DepartmentRef;
+    }
+    if (current.ClassRef) {
+      updated.ClassRef = current.ClassRef;
     }
     if (current.CustomerMemo) {
       updated.CustomerMemo = current.CustomerMemo;
@@ -471,6 +506,17 @@ export async function handleEditInvoice(
     );
     if (!match) throw new Error(`Department not found: "${department_name}"`);
     updated.DepartmentRef = { value: match.Id, name: match.FullyQualifiedName || match.Name };
+  }
+
+  // Resolve class if changing
+  if (class_name !== undefined) {
+    const classCache = await getClassCache(client);
+    let match = classCache.byName.get(class_name.toLowerCase());
+    if (!match) match = classCache.items.find(c =>
+      c.FullyQualifiedName?.toLowerCase().includes(class_name.toLowerCase())
+    );
+    if (!match) throw new Error(`Class not found: "${class_name}"`);
+    updated.ClassRef = { value: match.Id, name: match.FullyQualifiedName || match.Name };
   }
 
   // Process line changes if provided
@@ -581,6 +627,10 @@ export async function handleEditInvoice(
     if (department_name !== undefined) {
       const newDept = (updated.DepartmentRef as { name?: string })?.name || department_name;
       previewLines.push(`  Department: ${current.DepartmentRef?.name || '(none)'} → ${newDept}`);
+    }
+    if (class_name !== undefined) {
+      const newClass = (updated.ClassRef as { name?: string })?.name || class_name;
+      previewLines.push(`  Class: ${current.ClassRef?.name || '(none)'} → ${newClass}`);
     }
 
     if (updated.Line) {

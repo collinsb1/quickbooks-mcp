@@ -1,0 +1,508 @@
+// Handlers for journal entry tools (create, get, edit)
+import { promisify, getAccountCache, getDepartmentCache, getClassCache, resolveEntityName, } from "../../client/index.js";
+import { validateAmount, sumCents, validateBalance, toDollars, formatDollars, outputReport, } from "../../utils/index.js";
+// Build QBO Entity object for JE lines from a resolved entity match
+function buildEntityDetail(match) {
+    if (match.kind !== 'exact')
+        return undefined;
+    return {
+        Type: match.entity.Type,
+        EntityRef: {
+            value: match.entity.Id,
+            name: match.entity.DisplayName,
+        },
+    };
+}
+export async function handleCreateJournalEntry(client, args) {
+    const { txn_date, description, entity_name, confirm_entity = false, memo, lines, draft = true, doc_number } = args;
+    // Get cached accounts, departments, and classes (uses TTL-based cache)
+    const [acctCache, deptCache, clsCache] = await Promise.all([
+        getAccountCache(client),
+        getDepartmentCache(client),
+        getClassCache(client),
+    ]);
+    // Helper to lookup account by name or AcctNum from cache
+    const lookupAccount = (name) => {
+        // Try exact AcctNum match (case-insensitive)
+        let match = acctCache.byAcctNum.get(name.toLowerCase());
+        // Try exact name match (case-insensitive)
+        if (!match) {
+            match = acctCache.byName.get(name.toLowerCase());
+        }
+        // Try partial match on FullyQualifiedName
+        if (!match) {
+            match = acctCache.items.find(a => a.FullyQualifiedName?.toLowerCase().includes(name.toLowerCase()) ||
+                a.FullyQualifiedName?.toLowerCase() === name.toLowerCase());
+        }
+        if (match) {
+            return { id: match.Id, name: match.FullyQualifiedName || match.Name, acctNum: match.AcctNum };
+        }
+        throw new Error(`Account not found: "${name}"`);
+    };
+    // Helper to lookup department (Location) by name from cache
+    const lookupDepartment = (name) => {
+        // Try exact name match (case-insensitive)
+        let match = deptCache.byName.get(name.toLowerCase());
+        // Try partial match on FullyQualifiedName
+        if (!match) {
+            match = deptCache.items.find(d => d.FullyQualifiedName?.toLowerCase().includes(name.toLowerCase()));
+        }
+        if (match) {
+            return { id: match.Id, name: match.FullyQualifiedName || match.Name };
+        }
+        throw new Error(`Location not found: "${name}"`);
+    };
+    // Helper to lookup class (Department) by name from cache
+    const lookupClass = (name) => {
+        // Try exact name match (case-insensitive)
+        let match = clsCache.byName.get(name.toLowerCase());
+        // Try partial match on FullyQualifiedName
+        if (!match) {
+            match = clsCache.items.find(c => c.FullyQualifiedName?.toLowerCase().includes(name.toLowerCase()));
+        }
+        if (match) {
+            return { id: match.Id, name: match.FullyQualifiedName || match.Name };
+        }
+        throw new Error(`Class not found: "${name}". Available classes: ${clsCache.items.map(c => c.Name).join(', ')}`);
+    };
+    // Resolve entity name against combined Customer+Vendor cache
+    const entityMatch = await resolveEntityName(client, entity_name);
+    // Fuzzy match without confirmation → block and show candidates
+    if (entityMatch.kind === 'fuzzy' && !confirm_entity) {
+        const candidateList = entityMatch.candidates
+            .map(c => `  • ${c.DisplayName} (${c.Type})`)
+            .join('\n');
+        throw new Error(`Entity "${entity_name}" not found exactly, but similar names exist in QBO:\n${candidateList}\n\n` +
+            `Did you mean one of these? Please either:\n` +
+            `  1. Use the exact name above (copy/paste), OR\n` +
+            `  2. Set confirm_entity=true to post without an entity (e.g. if this is a new name)`);
+    }
+    // Track whether we'll post without entity (for user messaging)
+    const postingWithoutEntity = entityMatch.kind === 'none' || (entityMatch.kind === 'fuzzy' && confirm_entity);
+    const entityDetail = buildEntityDetail(entityMatch);
+    // Resolve account, class, and department names to IDs (all lookups are from cache)
+    const resolvedLines = lines.map((line) => {
+        let accountId = line.account_id;
+        let accountName = line.account_name;
+        let accountNum;
+        let classId = line.class_id;
+        let className = line.class_name;
+        let departmentId = line.department_id;
+        let departmentName = line.department_name;
+        // Resolve account
+        if (!accountId && accountName) {
+            const account = lookupAccount(accountName);
+            accountId = account.id;
+            accountName = account.name;
+            accountNum = account.acctNum;
+        }
+        else if (!accountId && !accountName) {
+            throw new Error("Each line must have either account_id or account_name");
+        }
+        // Validate class is required on JE lines
+        if (!classId && !className) {
+            throw new Error(`class_name is required on every JE line (account: ${accountName || accountId}). Provide the QBO Class (department/cost center).`);
+        }
+        // Resolve class
+        if (!classId && className) {
+            const cls = lookupClass(className);
+            classId = cls.id;
+            className = cls.name;
+        }
+        // Resolve department (Location) — optional
+        if (!departmentId && departmentName) {
+            const dept = lookupDepartment(departmentName);
+            departmentId = dept.id;
+            departmentName = dept.name;
+        }
+        // Validate and convert amount to cents
+        const amountCents = validateAmount(line.amount, `Line ${accountName || accountId}`);
+        return {
+            ...line,
+            account_id: accountId,
+            account_name: accountName,
+            account_num: accountNum,
+            class_id: classId,
+            class_name: className,
+            department_id: departmentId,
+            department_name: departmentName,
+            amount_cents: amountCents,
+            // Normalize amount to exactly 2 decimal places
+            amount: toDollars(amountCents)
+        };
+    });
+    // Validate debits = credits using cents (exact integer comparison)
+    const totalDebitsCents = sumCents(resolvedLines.filter(l => l.posting_type === "Debit").map(l => l.amount_cents));
+    const totalCreditsCents = sumCents(resolvedLines.filter(l => l.posting_type === "Credit").map(l => l.amount_cents));
+    validateBalance(totalDebitsCents, totalCreditsCents);
+    // Build QuickBooks JournalEntry object
+    // description is header-level: applied to every line per QBO API requirements
+    // entity is per-line in QBO API but provided once at transaction level
+    const journalEntry = {
+        TxnDate: txn_date,
+        PrivateNote: memo,
+        ...(doc_number && { DocNumber: doc_number }),
+        Line: resolvedLines.map((line) => ({
+            Amount: line.amount,
+            DetailType: "JournalEntryLineDetail",
+            Description: description,
+            JournalEntryLineDetail: {
+                PostingType: line.posting_type,
+                AccountRef: {
+                    value: line.account_id,
+                    name: line.account_name
+                },
+                ...(line.class_id && {
+                    ClassRef: {
+                        value: line.class_id,
+                        name: line.class_name
+                    }
+                }),
+                ...(line.department_id && {
+                    DepartmentRef: {
+                        value: line.department_id,
+                        name: line.department_name
+                    }
+                }),
+                ...(entityDetail && { Entity: entityDetail })
+            }
+        }))
+    };
+    // Entity status line for output
+    const entityStatusLine = (() => {
+        if (entityMatch.kind === 'exact') {
+            return `Entity: ${entityMatch.entity.DisplayName} (${entityMatch.entity.Type})`;
+        }
+        return `Entity: ⚠️  Not linked — Entity not found in QBO — you should go into QBO and add the Vendor/Client to the Journal Entry`;
+    })();
+    if (draft) {
+        // Preview mode - return what would be created
+        const formatAccount = (l) => {
+            const num = l.account_num ? `${l.account_num} ` : "";
+            return `${num}${l.account_name || l.account_id}`;
+        };
+        const preview = [
+            "DRAFT - Journal Entry Preview",
+            "",
+            `Date: ${txn_date}`,
+            `Journal no.: ${doc_number || "(auto-assign)"}`,
+            `Description: ${description}`,
+            entityStatusLine,
+            `Memo: ${memo || "(none)"}`,
+            `Total: $${formatDollars(totalDebitsCents)}`,
+            "",
+            "Lines:",
+            ...resolvedLines.map(l => `  ${l.posting_type.padEnd(6)} ${formatAccount(l)}${l.class_id ? ` [Class: ${l.class_name || l.class_id}]` : ""}${l.department_id ? ` [Location: ${l.department_name || l.department_id}]` : ""}: $${l.amount.toFixed(2)}`),
+            "",
+            doc_number
+                ? "Set draft=false to create this entry."
+                : "Set draft=false to create this entry, or specify doc_number to set the journal number."
+        ].join("\n");
+        return {
+            content: [{ type: "text", text: preview }],
+        };
+    }
+    // Create the entry
+    const result = await promisify((cb) => client.createJournalEntry(journalEntry, cb));
+    // Build QuickBooks URL
+    const qboUrl = `https://app.qbo.intuit.com/app/journal?txnId=${result.Id}`;
+    const responseLines = [
+        "Journal Entry Created!",
+        "",
+        `Journal no.: ${result.DocNumber || "(auto-assigned)"}`,
+        `Date: ${txn_date}`,
+        `Description: ${description}`,
+        entityStatusLine,
+        `Total: $${formatDollars(totalDebitsCents)}`,
+        "",
+        `View in QuickBooks: ${qboUrl}`
+    ];
+    // Add note if entity was not linked
+    if (postingWithoutEntity) {
+        responseLines.push("");
+        responseLines.push("⚠️  Entity not found in QBO — posted without Name field. You should go into QBO and add the Vendor/Client to the Journal Entry.");
+    }
+    return {
+        content: [{ type: "text", text: responseLines.join("\n") }],
+    };
+}
+export async function handleGetJournalEntry(client, args) {
+    const { id } = args;
+    const je = await promisify((cb) => client.getJournalEntry(id, cb));
+    const qboUrl = `https://app.qbo.intuit.com/app/journal?txnId=${je.Id}`;
+    // Format summary
+    const lines = [
+        'Journal Entry',
+        '=============',
+        `ID: ${je.Id}`,
+        `SyncToken: ${je.SyncToken}`,
+        `Date: ${je.TxnDate}`,
+        `Journal no.: ${je.DocNumber || '(none)'}`,
+        `Memo: ${je.PrivateNote || '(none)'}`,
+        `Total: $${(je.TotalAmt || 0).toFixed(2)}`,
+        '',
+        'Lines:',
+    ];
+    for (const line of je.Line || []) {
+        const detail = line.JournalEntryLineDetail;
+        if (!detail)
+            continue;
+        const acctName = detail.AccountRef.name || detail.AccountRef.value;
+        const className = detail.ClassRef?.name || detail.ClassRef?.value;
+        const classStr = className ? ` [Class: ${className}]` : '';
+        const deptName = detail.DepartmentRef?.name || detail.DepartmentRef?.value;
+        const deptStr = deptName ? ` [Location: ${deptName}]` : '';
+        const entityName = detail.Entity?.EntityRef?.name || detail.Entity?.EntityRef?.value;
+        const entityStr = entityName ? ` [Entity: ${entityName} (${detail.Entity?.Type})]` : '';
+        const descStr = line.Description ? ` "${line.Description}"` : '';
+        lines.push(`  Line ${line.Id}: ${detail.PostingType.padEnd(6)} ${acctName}${classStr}${deptStr}${entityStr} $${line.Amount.toFixed(2)}${descStr}`);
+    }
+    lines.push('');
+    lines.push(`View in QuickBooks: ${qboUrl}`);
+    return outputReport(`journal-entry-${je.Id}`, je, lines.join('\n'));
+}
+export async function handleEditJournalEntry(client, args) {
+    const { id, txn_date, description, entity_name, confirm_entity = false, memo, doc_number, lines: lineChanges, draft = true } = args;
+    // Fetch current JE
+    const current = await promisify((cb) => client.getJournalEntry(id, cb));
+    // Resolve entity if provided
+    let entityMatch;
+    let entityDetail;
+    let postingWithoutEntity = false;
+    let entityStatusLine;
+    if (entity_name !== undefined) {
+        entityMatch = await resolveEntityName(client, entity_name);
+        // Fuzzy match without confirmation → block
+        if (entityMatch.kind === 'fuzzy' && !confirm_entity) {
+            const candidateList = entityMatch.candidates
+                .map(c => `  • ${c.DisplayName} (${c.Type})`)
+                .join('\n');
+            throw new Error(`Entity "${entity_name}" not found exactly, but similar names exist in QBO:\n${candidateList}\n\n` +
+                `Did you mean one of these? Please either:\n` +
+                `  1. Use the exact name above (copy/paste), OR\n` +
+                `  2. Set confirm_entity=true to post without an entity (e.g. if this is a new name)`);
+        }
+        postingWithoutEntity = entityMatch.kind === 'none' || (entityMatch.kind === 'fuzzy' && confirm_entity);
+        entityDetail = buildEntityDetail(entityMatch);
+        entityStatusLine = entityMatch.kind === 'exact'
+            ? `Entity: ${entityMatch.entity.DisplayName} (${entityMatch.entity.Type})`
+            : `Entity: ⚠️  Not linked — Entity not found in QBO`;
+    }
+    // Determine if we're modifying lines - requires full update (not sparse)
+    const needsFullUpdate = (lineChanges && lineChanges.length > 0) || description !== undefined || entity_name !== undefined;
+    // Build updated JE
+    const updated = {
+        Id: current.Id,
+        SyncToken: current.SyncToken,
+    };
+    // Only use sparse for non-line updates; full update needed for line modifications
+    // Note: node-quickbooks auto-sets sparse=true, so we must explicitly set sparse=false for full updates
+    if (!needsFullUpdate) {
+        updated.sparse = true;
+    }
+    else {
+        // Full update: explicitly set sparse=false (node-quickbooks defaults to true)
+        updated.sparse = false;
+        updated.TxnDate = current.TxnDate;
+        updated.PrivateNote = current.PrivateNote;
+        updated.DocNumber = current.DocNumber;
+        // Copy lines and strip read-only fields
+        updated.Line = current.Line.map(line => {
+            const { LineNum, ...rest } = line;
+            return rest;
+        });
+    }
+    // Update simple fields if provided
+    if (txn_date !== undefined)
+        updated.TxnDate = txn_date;
+    if (memo !== undefined)
+        updated.PrivateNote = memo;
+    if (doc_number !== undefined)
+        updated.DocNumber = doc_number;
+    // Process line changes if provided
+    // Use updated.Line if available (for full updates with stripped read-only fields), else current.Line
+    let finalLines = [...(updated.Line || current.Line)];
+    if (lineChanges && lineChanges.length > 0) {
+        // Get caches for lookups
+        const [acctCache, deptCache, clsCache] = await Promise.all([
+            getAccountCache(client),
+            getDepartmentCache(client),
+            getClassCache(client),
+        ]);
+        // Helper to resolve account
+        const resolveAcct = (name) => {
+            let match = acctCache.byAcctNum.get(name.toLowerCase());
+            if (!match)
+                match = acctCache.byName.get(name.toLowerCase());
+            if (!match)
+                match = acctCache.items.find(a => a.FullyQualifiedName?.toLowerCase().includes(name.toLowerCase()));
+            if (!match)
+                throw new Error(`Account not found: "${name}"`);
+            return { value: match.Id, name: match.FullyQualifiedName || match.Name };
+        };
+        // Helper to resolve department (Location)
+        const resolveDept = (name) => {
+            let match = deptCache.byName.get(name.toLowerCase());
+            if (!match)
+                match = deptCache.items.find(d => d.FullyQualifiedName?.toLowerCase().includes(name.toLowerCase()));
+            if (!match)
+                throw new Error(`Location not found: "${name}"`);
+            return { value: match.Id, name: match.FullyQualifiedName || match.Name };
+        };
+        // Helper to resolve class (department/cost center)
+        const resolveClass = (name) => {
+            let match = clsCache.byName.get(name.toLowerCase());
+            if (!match)
+                match = clsCache.items.find(c => c.FullyQualifiedName?.toLowerCase().includes(name.toLowerCase()));
+            if (!match)
+                throw new Error(`Class not found: "${name}". Available classes: ${clsCache.items.map(c => c.Name).join(', ')}`);
+            return { value: match.Id, name: match.FullyQualifiedName || match.Name };
+        };
+        for (const change of lineChanges) {
+            if (change.line_id) {
+                // Find existing line
+                const lineIndex = finalLines.findIndex(l => l.Id === change.line_id);
+                if (lineIndex === -1) {
+                    throw new Error(`Line ID ${change.line_id} not found in journal entry`);
+                }
+                if (change.delete) {
+                    // Remove the line
+                    finalLines.splice(lineIndex, 1);
+                }
+                else {
+                    // Update existing line
+                    const line = { ...finalLines[lineIndex] };
+                    const detail = { ...line.JournalEntryLineDetail };
+                    if (change.amount !== undefined) {
+                        // Validate and normalize the amount
+                        const amountCents = validateAmount(change.amount, `Line ${change.line_id}`);
+                        line.Amount = toDollars(amountCents);
+                    }
+                    if (change.posting_type !== undefined)
+                        detail.PostingType = change.posting_type;
+                    if (change.account_name !== undefined)
+                        detail.AccountRef = resolveAcct(change.account_name);
+                    if (change.class_name !== undefined)
+                        detail.ClassRef = resolveClass(change.class_name);
+                    if (change.department_name !== undefined)
+                        detail.DepartmentRef = resolveDept(change.department_name);
+                    line.JournalEntryLineDetail = detail;
+                    finalLines[lineIndex] = line;
+                }
+            }
+            else {
+                // New line
+                if (!change.amount || !change.posting_type || !change.account_name) {
+                    throw new Error('New lines require amount, posting_type, and account_name');
+                }
+                // Validate and normalize the amount
+                const amountCents = validateAmount(change.amount, `New line for ${change.account_name}`);
+                // Id omitted for new lines - QB will assign
+                const newLine = {
+                    Amount: toDollars(amountCents),
+                    DetailType: 'JournalEntryLineDetail',
+                    JournalEntryLineDetail: {
+                        PostingType: change.posting_type,
+                        AccountRef: resolveAcct(change.account_name),
+                        ...(change.class_name && { ClassRef: resolveClass(change.class_name) }),
+                        ...(change.department_name && { DepartmentRef: resolveDept(change.department_name) })
+                    }
+                };
+                finalLines.push(newLine);
+            }
+        }
+    }
+    // Apply header-level description to all lines if provided
+    if (description !== undefined) {
+        finalLines = finalLines.map(line => ({
+            ...line,
+            Description: description,
+        }));
+    }
+    // Apply entity to all lines if resolved
+    if (entityDetail !== undefined) {
+        finalLines = finalLines.map(line => ({
+            ...line,
+            JournalEntryLineDetail: {
+                ...line.JournalEntryLineDetail,
+                Entity: entityDetail,
+            },
+        }));
+    }
+    else if (entity_name !== undefined && postingWithoutEntity) {
+        // entity_name was provided but no match — remove entity from all lines
+        finalLines = finalLines.map(line => {
+            // eslint-disable-next-line @typescript-eslint/no-unused-vars
+            const { Entity: _entity, ...detailWithoutEntity } = line.JournalEntryLineDetail;
+            return {
+                ...line,
+                JournalEntryLineDetail: detailWithoutEntity,
+            };
+        });
+    }
+    if (needsFullUpdate) {
+        updated.Line = finalLines;
+    }
+    // Validate debits = credits if lines were modified (using cents for exact comparison)
+    if (updated.Line) {
+        const lines = updated.Line;
+        const totalDebitsCents = sumCents(lines.filter(l => l.JournalEntryLineDetail.PostingType === 'Debit').map(l => validateAmount(l.Amount)));
+        const totalCreditsCents = sumCents(lines.filter(l => l.JournalEntryLineDetail.PostingType === 'Credit').map(l => validateAmount(l.Amount)));
+        validateBalance(totalDebitsCents, totalCreditsCents);
+    }
+    const qboUrl = `https://app.qbo.intuit.com/app/journal?txnId=${id}`;
+    if (draft) {
+        // Preview mode
+        const previewLines = [
+            'DRAFT - Journal Entry Edit Preview',
+            '',
+            `ID: ${id}`,
+            `SyncToken: ${current.SyncToken}`,
+            '',
+            'Changes:',
+        ];
+        if (txn_date !== undefined)
+            previewLines.push(`  Date: ${current.TxnDate} → ${txn_date}`);
+        if (memo !== undefined)
+            previewLines.push(`  Memo: ${current.PrivateNote || '(none)'} → ${memo}`);
+        if (doc_number !== undefined)
+            previewLines.push(`  Journal no.: ${current.DocNumber || '(none)'} → ${doc_number}`);
+        if (description !== undefined)
+            previewLines.push(`  Description: (updating all lines) → "${description}"`);
+        if (entityStatusLine !== undefined)
+            previewLines.push(`  ${entityStatusLine}`);
+        if (updated.Line) {
+            previewLines.push('');
+            previewLines.push('Updated Lines:');
+            for (const line of updated.Line) {
+                const detail = line.JournalEntryLineDetail;
+                const acctName = detail.AccountRef.name || detail.AccountRef.value;
+                const classStr = detail.ClassRef?.name ? ` [Class: ${detail.ClassRef.name}]` : '';
+                const deptStr = detail.DepartmentRef?.name ? ` [Location: ${detail.DepartmentRef.name}]` : '';
+                previewLines.push(`  ${detail.PostingType.padEnd(6)} ${acctName}${classStr}${deptStr}: $${line.Amount.toFixed(2)}`);
+            }
+        }
+        previewLines.push('');
+        previewLines.push('Set draft=false to apply these changes.');
+        return {
+            content: [{ type: "text", text: previewLines.join('\n') }],
+        };
+    }
+    // Apply the update
+    const result = await promisify((cb) => client.updateJournalEntry(updated, cb));
+    const responseLines = [
+        `Journal Entry ${id} updated successfully.`,
+        `New SyncToken: ${result.SyncToken}`,
+    ];
+    if (entityStatusLine)
+        responseLines.push(entityStatusLine);
+    responseLines.push(`View in QuickBooks: ${qboUrl}`);
+    if (postingWithoutEntity && entity_name !== undefined) {
+        responseLines.push("");
+        responseLines.push("⚠️  Entity not found in QBO — posted without Name field. You should go into QBO and add the Vendor/Client to the Journal Entry.");
+    }
+    return {
+        content: [{ type: "text", text: responseLines.join('\n') }],
+    };
+}
+//# sourceMappingURL=journal-entry.js.map

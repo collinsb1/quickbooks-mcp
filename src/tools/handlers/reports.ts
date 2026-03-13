@@ -1,7 +1,7 @@
 // Handlers for report tools (profit_loss, balance_sheet, trial_balance)
 
 import QuickBooks from "node-quickbooks";
-import { promisify, resolveDepartmentId } from "../../client/index.js";
+import { promisify, resolveDepartmentId, resolveClassId } from "../../client/index.js";
 import { outputReport } from "../../utils/index.js";
 import { extractReportSummary } from "../../reports/index.js";
 import { QBReport } from "../../types/index.js";
@@ -13,16 +13,18 @@ export async function handleGetProfitLoss(
     end_date?: string;
     summarize_by?: string;
     department?: string;
+    class_name?: string;
     accounting_method?: string;
   }
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
-  const { start_date, end_date, summarize_by, department, accounting_method } = args;
+  const { start_date, end_date, summarize_by, department, class_name, accounting_method } = args;
 
   const options: Record<string, string> = {};
   if (start_date) options.start_date = start_date;
   if (end_date) options.end_date = end_date;
   if (summarize_by) options.summarize_column_by = summarize_by;
   if (department) options.department = await resolveDepartmentId(client, department);
+  if (class_name) options.class = await resolveClassId(client, class_name);
   if (accounting_method) options.accounting_method = accounting_method;
 
   const result = await promisify<unknown>((cb) =>
@@ -39,10 +41,11 @@ export async function handleGetBalanceSheet(
     as_of_date?: string;
     summarize_by?: string;
     department?: string;
+    class_name?: string;
     accounting_method?: string;
   }
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
-  const { as_of_date, summarize_by, department, accounting_method } = args;
+  const { as_of_date, summarize_by, department, class_name, accounting_method } = args;
 
   const options: Record<string, string> = {};
   if (as_of_date) {
@@ -53,6 +56,7 @@ export async function handleGetBalanceSheet(
   }
   if (summarize_by) options.summarize_column_by = summarize_by;
   if (department) options.department = await resolveDepartmentId(client, department);
+  if (class_name) options.class = await resolveClassId(client, class_name);
   if (accounting_method) options.accounting_method = accounting_method;
 
   const result = await promisify<unknown>((cb) =>
