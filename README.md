@@ -306,9 +306,9 @@ QBO_INLINE_OUTPUT=true
 | `account_period_summary` | Period summary for an account (opening/closing balance, debits, credits, count) |
 | `get_general_ledger` | Full line-level GL detail for an account — date range required, all transaction types including Transfers, up to 500 lines with truncation warning |
 | **Journal Entries** | |
-| `create_journal_entry` | Create a journal entry (validates debits = credits) |
+| `create_journal_entry` | Create a journal entry — `description` and `entity_name` required; `class_name` per line; validates debits = credits |
 | `get_journal_entry` | Fetch a journal entry by ID |
-| `edit_journal_entry` | Modify an existing journal entry |
+| `edit_journal_entry` | Modify an existing journal entry — supports updating `description`, `entity_name`, and `class_name` |
 | **Bills** | |
 | `create_bill` | Create a vendor bill |
 | `get_bill` | Fetch a bill by ID |
@@ -335,6 +335,51 @@ QBO_INLINE_OUTPUT=true
 | `edit_vendor_credit` | Modify an existing vendor credit |
 | **Delete** | |
 | `delete_entity` | Delete any transaction (journal entry, bill, invoice, deposit, sales receipt, expense, vendor credit) |
+
+---
+
+## Journal Entry Fields
+
+### `description` (required on create, optional on edit)
+
+A transaction-level memo applied to every line of the journal entry. This appears as the description visible on the posted JE in QuickBooks.
+
+```
+"description": "March prepaid software amortization"
+```
+
+On `edit_journal_entry`, providing `description` replaces the description on all lines and triggers a full line update (which also preserves `ClassRef` and `DepartmentRef` values on each line).
+
+### `entity_name` (required on create, optional on edit)
+
+The name of a Customer or Vendor to associate with the journal entry. The server searches QuickBooks' combined Customer + Vendor list and applies one of three resolution paths:
+
+| Result | Behavior |
+|--------|----------|
+| **Exact match** | Entity linked automatically — shown in draft and posted to QBO |
+| **Fuzzy match** | Draft blocked; candidate names returned for you to confirm |
+| **No match** | Draft proceeds with a ⚠️ warning; JE posts without an entity |
+
+When a fuzzy match is returned, re-submit with the exact candidate name shown, or set `confirm_entity: true` to post without any entity.
+
+### `confirm_entity` (optional)
+
+Set to `true` to intentionally post without an entity when a fuzzy match was detected but you want to proceed anyway — for example, when the entity name is intentionally different from any existing Customer or Vendor.
+
+### `class_name` (per-line on create and edit)
+
+QBO Class (cost center / department) for each journal entry line. Class is applied at the line level, not the header, so you can assign different classes to different lines within the same JE.
+
+```json
+{
+  "lines": [
+    { "account_name": "64400", "amount": 100, "posting_type": "Debit",  "class_name": "Engineering" },
+    { "account_name": "64120", "amount": 100, "posting_type": "Credit", "class_name": "Finance & Accounting" }
+  ]
+}
+```
+
+On `edit_journal_entry`, `class_name` changes on individual lines trigger the same full-update path as `description`, ensuring all line-level metadata (Class, Department, Entity) is preserved across the update.
 
 ---
 
