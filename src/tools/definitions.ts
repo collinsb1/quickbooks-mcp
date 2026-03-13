@@ -250,6 +250,18 @@ export const toolDefinitions = [
           type: "string",
           description: "Transaction date in YYYY-MM-DD format",
         },
+        description: {
+          type: "string",
+          description: "Transaction-level description applied to all lines (required). This is the memo/description visible on the journal entry.",
+        },
+        entity_name: {
+          type: "string",
+          description: "Name of the Customer or Vendor associated with this journal entry (required). Searched against QBO's combined Customer+Vendor list. If an exact match is found the entity is linked; if a fuzzy match is found you will be prompted to confirm; if no match is found the JE is posted without an entity.",
+        },
+        confirm_entity: {
+          type: "boolean",
+          description: "Set to true to post without the Entity field when a fuzzy match was detected but you want to proceed anyway (e.g. the entity name is intentionally different). Default: false.",
+        },
         memo: {
           type: "string",
           description: "Private memo for the journal entry",
@@ -293,10 +305,6 @@ export const toolDefinitions = [
                 type: "string",
                 description: "Location ID (use if you already know it, otherwise use department_name)",
               },
-              description: {
-                type: "string",
-                description: "Line description (optional)",
-              },
             },
             required: ["amount", "posting_type", "class_name"],
           },
@@ -310,7 +318,7 @@ export const toolDefinitions = [
           description: "Journal number (shown as 'Journal no.' in QuickBooks). If not specified, QuickBooks will auto-assign the next number.",
         },
       },
-      required: ["txn_date", "lines"],
+      required: ["txn_date", "description", "entity_name", "lines"],
     },
   },
   {
@@ -340,6 +348,18 @@ export const toolDefinitions = [
         txn_date: {
           type: "string",
           description: "New transaction date in YYYY-MM-DD format (optional)",
+        },
+        description: {
+          type: "string",
+          description: "New transaction-level description to apply to all lines (optional). Replaces the description on every line.",
+        },
+        entity_name: {
+          type: "string",
+          description: "New Customer or Vendor name to associate with the journal entry (optional). Same fuzzy-match logic as create: exact match links the entity, fuzzy match prompts confirmation, no match posts without entity.",
+        },
+        confirm_entity: {
+          type: "boolean",
+          description: "Set to true to post without the Entity field when a fuzzy match was detected but you want to proceed anyway. Default: false.",
         },
         memo: {
           type: "string",
@@ -379,10 +399,6 @@ export const toolDefinitions = [
               department_name: {
                 type: "string",
                 description: "Location name (auto-resolved to ID)",
-              },
-              description: {
-                type: "string",
-                description: "Line description",
               },
               delete: {
                 type: "boolean",

@@ -9,10 +9,12 @@ import {
   CachedDepartment,
   CachedVendor,
   CachedItem,
+  CachedEntity,
   AccountCache,
   ClassCache,
   DepartmentCache,
   VendorCache,
+  EntityCache,
   QBQueryResponse,
 } from "../types/index.js";
 
@@ -24,6 +26,7 @@ let departmentCache: DepartmentCache | null = null;
 let classCache: ClassCache | null = null;
 let accountCache: AccountCache | null = null;
 let vendorCache: VendorCache | null = null;
+let entityCache: EntityCache | null = null;
 // Item cache: lazy per-entry lookup (not bulk-loaded like others)
 const itemCacheById = new Map<string, CachedItem>();
 const itemCacheByName = new Map<string, CachedItem>(); // lowercase key
@@ -36,6 +39,7 @@ export function clearLookupCache(): void {
   classCache = null;
   accountCache = null;
   vendorCache = null;
+  entityCache = null;
   itemCacheById.clear();
   itemCacheByName.clear();
   customerCacheById.clear();
@@ -318,4 +322,91 @@ export async function resolveCustomer(client: QuickBooks, nameOrId: string): Pro
   customerCacheByName.set(customer.DisplayName.toLowerCase(), entry);
 
   return { value: customer.Id, name: customer.DisplayName };
+}
+
+// Bulk-load Customers + Vendors into a single unified entity cache
+// This mirrors QBO's "Name" field on JEs which shows one merged list
+export async function getEntityCache(client: QuickBooks): Promise<EntityCache> {
+  if (entityCache && (Date.now() - entityCache.fetchedAt) < LOOKUP_CACHE_TTL_MS) {
+    return entityCache;
+  }
+
+  // Fetch both in parallel
+  const [vendorResult, customerResult] = await Promise.all([
+    promisify<unknown>((cb) => client.findVendors({ fetchAll: true }, cb)),
+    promisify<unknown>((cb) => client.findCustomers({ fetchAll: true }, cb)),
+  ]);
+
+  const vendors = extractQueryResults<{ Id: string; DisplayName: string; Active?: boolean }>(vendorResult, 'Vendor');
+  const customers = extractQueryResults<{ Id: string; DisplayName: string; Active?: boolean }>(customerResult, 'Customer');
+
+  const byId = new Map<string, CachedEntity>();
+  const byName = new Map<string, CachedEntity>();
+  const items: CachedEntity[] = [];
+
+  for (const v of vendors) {
+    const entity: CachedEntity = { Id: v.Id, DisplayName: v.DisplayName, Type: 'Vendor', Active: v.Active };
+    items.push(entity);
+    byId.set(v.Id, entity);
+    byName.set(v.DisplayName.toLowerCase(), entity);
+  }
+  for (const c of customers) {
+    const entity: CachedEntity = { Id: c.Id, DisplayName: c.DisplayName, Type: 'Customer', Active: c.Active };
+    items.push(entity);
+    byId.set(c.Id, entity);
+    // If name collision with a vendor, customer wins (matches QBO behavior)
+    byName.set(c.DisplayName.toLowerCase(), entity);
+  }
+
+  entityCache = { items, byId, byName, fetchedAt: Date.now() };
+  return entityCache;
+}
+
+// Fuzzy match result type
+export type EntityMatchResult =
+  | { kind: 'exact'; entity: CachedEntity }
+  | { kind: 'fuzzy'; candidates: CachedEntity[] }
+  | { kind: 'none' };
+
+// Resolve entity name against combined Customer+Vendor cache with fuzzy detection
+// Returns:
+//   exact  — single exact match found (case-insensitive)
+//   fuzzy  — no exact match but 1+ candidates found via substring or word overlap
+//   none   — no match at all (likely a new entity, post without Entity field)
+export async function resolveEntityName(client: QuickBooks, nameOrId: string): Promise<EntityMatchResult> {
+  const cache = await getEntityCache(client);
+  const needle = nameOrId.toLowerCase().trim();
+
+  // 1. Exact ID match
+  const byId = cache.byId.get(nameOrId);
+  if (byId) return { kind: 'exact', entity: byId };
+
+  // 2. Exact name match (case-insensitive)
+  const byName = cache.byName.get(needle);
+  if (byName) return { kind: 'exact', entity: byName };
+
+  // 3. Fuzzy matching — substring in either direction OR ≥50% word overlap
+  const candidates: CachedEntity[] = [];
+  const needleWords = needle.split(/\s+/).filter(w => w.length > 1);
+
+  for (const entity of cache.items) {
+    const hay = entity.DisplayName.toLowerCase();
+
+    // Substring: needle contains hay or hay contains needle
+    if (hay.includes(needle) || needle.includes(hay)) {
+      candidates.push(entity);
+      continue;
+    }
+
+    // Word overlap: ≥50% of needle words appear in the entity name
+    if (needleWords.length > 0) {
+      const matchCount = needleWords.filter(w => hay.includes(w)).length;
+      if (matchCount / needleWords.length >= 0.5) {
+        candidates.push(entity);
+      }
+    }
+  }
+
+  if (candidates.length > 0) return { kind: 'fuzzy', candidates };
+  return { kind: 'none' };
 }

@@ -19,4 +19,7 @@ export {
   resolveCustomer,
   resolveDepartmentId,
   resolveClassId,
+  getEntityCache,
+  resolveEntityName,
+  type EntityMatchResult,
 } from './cache.js';

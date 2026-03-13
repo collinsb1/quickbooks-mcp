@@ -73,3 +73,18 @@ export interface ClassCache {
   byName: Map<string, CachedClass>;  // lowercase key
   fetchedAt: number;
 }
+
+// Unified entity cache (Customers + Vendors merged — mirrors QBO's "Name" field on JEs)
+export interface CachedEntity {
+  Id: string;
+  DisplayName: string;
+  Type: 'Customer' | 'Vendor';
+  Active?: boolean;
+}
+
+export interface EntityCache {
+  items: CachedEntity[];
+  byId: Map<string, CachedEntity>;
+  byName: Map<string, CachedEntity>;  // lowercase key
+  fetchedAt: number;
+}
