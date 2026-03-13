@@ -190,8 +190,7 @@ export async function handleCreateJournalEntry(
     TxnDate: txn_date,
     PrivateNote: memo,
     ...(doc_number && { DocNumber: doc_number }),
-    Line: resolvedLines.map((line, idx) => ({
-      Id: String(idx),
+    Line: resolvedLines.map((line) => ({
       Amount: line.amount,
       DetailType: "JournalEntryLineDetail",
       Description: line.description,
@@ -203,12 +202,14 @@ export async function handleCreateJournalEntry(
         },
         ...(line.class_id && {
           ClassRef: {
-            value: line.class_id
+            value: line.class_id,
+            name: line.class_name
           }
         }),
         ...(line.department_id && {
           DepartmentRef: {
-            value: line.department_id
+            value: line.department_id,
+            name: line.department_name
           }
         })
       }
