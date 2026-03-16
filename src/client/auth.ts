@@ -99,8 +99,10 @@ export async function getClient(): Promise<QuickBooks> {
         credentials = await refreshAccessToken(credentials);
         await provider.saveCredentials(credentials);
       } catch (fallbackError) {
-        // If both methods fail, throw the original error
-        throw refreshError;
+        // Both refresh methods failed — proceed with existing token in local mode.
+        // The token may still be valid (e.g. right after initial OAuth exchange).
+        // If it's actually expired, the 401 retry in executeTool will catch it.
+        console.warn("Token refresh failed, proceeding with existing access token:", refreshError);
       }
     } else {
       throw refreshError;
