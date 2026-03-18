@@ -80,7 +80,8 @@ function parseGLReportDetail(report: GLReport): ParsedGL {
   const dateIdx      = columns.findIndex(c => c.ColTitle === "Date");
   const txnTypeIdx   = columns.findIndex(c => c.ColTitle === "Transaction Type");
   const numIdx       = columns.findIndex(c => c.ColTitle === "Num");
-  const nameIdx      = columns.findIndex(c => c.ColTitle === "Name");
+  const nameIdx      = columns.findIndex(c => c.ColTitle === "Name" || c.ColTitle === "Customer");
+  const vendorIdx    = columns.findIndex(c => c.ColTitle === "Vendor");
   const memoIdx      = columns.findIndex(c => c.ColTitle === "Memo/Description");
   const splitIdx     = columns.findIndex(c => c.ColTitle === "Split");
   const amountIdx    = columns.findIndex(c => c.ColTitle === "Amount");
@@ -145,7 +146,7 @@ function parseGLReportDetail(report: GLReport): ParsedGL {
           date:       getVal(colData, dateIdx),
           txnType:    getVal(colData, txnTypeIdx),
           num:        getVal(colData, numIdx),
-          name:       getVal(colData, nameIdx),
+          name:       getVal(colData, nameIdx) || getVal(colData, vendorIdx),
           memo:       getVal(colData, memoIdx),
           split:      getVal(colData, splitIdx),
           department: classIdx >= 0 ? (getVal(colData, classIdx) || null) : null,
@@ -193,10 +194,13 @@ export async function handleGetGeneralLedger(
   const resolvedAccount = await resolveAccount(client, account);
 
   // Build report options
+  // Explicitly request columns including klass_name (Class/Dept at OOO) and dept_name (Location at OOO)
+  // QBO does not include Class or Location columns by default in the GL report.
   const options: Record<string, string> = {
     account:    resolvedAccount.Id,
     start_date,
     end_date,
+    columns:    "tx_date,txn_type,doc_num,cust_name,vend_name,memo,klass_name,dept_name,split_acc,subt_nat_amount,rbal_nat_amount",
   };
 
   if (department) {
