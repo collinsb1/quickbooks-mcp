@@ -5,7 +5,9 @@
 // unlike query_account_transactions which misses the Transfer entity type.
 //
 // GL report column layout:
-//   Date | Transaction Type | Num | Name | Memo/Description | Split | Amount | Balance
+//   Date | Transaction Type | Num | Name | Memo/Description | Class | Split | Amount | Balance
+//   Class (ColType "class") = Department at OOO
+//   Location (ColType "dept") = Location at OOO
 //   Amount: negative = debit, positive = credit (QBO convention for this report)
 //   Balance: running balance; empty on Summary rows
 //   "Beginning Balance" Data row: Balance column = opening balance
@@ -55,6 +57,8 @@ export interface GLLine {
   name: string;
   memo: string;
   split: string;
+  department: string | null;  // QBO Class field — used as Department at OOO
+  location: string | null;    // QBO Location/Dept field — used as Location at OOO
   amount: number;   // negative = debit, positive = credit (raw from report)
   balance: number;  // running balance
 }
@@ -81,6 +85,8 @@ function parseGLReportDetail(report: GLReport): ParsedGL {
   const splitIdx     = columns.findIndex(c => c.ColTitle === "Split");
   const amountIdx    = columns.findIndex(c => c.ColTitle === "Amount");
   const balanceIdx   = columns.findIndex(c => c.ColTitle === "Balance");
+  const classIdx     = columns.findIndex(c => c.ColTitle === "Class");
+  const deptIdx      = columns.findIndex(c => c.ColTitle === "Location" || c.ColTitle === "Department");
 
   let openingBalance = 0;
   let closingBalance = 0;
@@ -136,12 +142,14 @@ function parseGLReportDetail(report: GLReport): ParsedGL {
         }
 
         lines.push({
-          date:    getVal(colData, dateIdx),
-          txnType: getVal(colData, txnTypeIdx),
-          num:     getVal(colData, numIdx),
-          name:    getVal(colData, nameIdx),
-          memo:    getVal(colData, memoIdx),
-          split:   getVal(colData, splitIdx),
+          date:       getVal(colData, dateIdx),
+          txnType:    getVal(colData, txnTypeIdx),
+          num:        getVal(colData, numIdx),
+          name:       getVal(colData, nameIdx),
+          memo:       getVal(colData, memoIdx),
+          split:      getVal(colData, splitIdx),
+          department: classIdx >= 0 ? (getVal(colData, classIdx) || null) : null,
+          location:   deptIdx  >= 0 ? (getVal(colData, deptIdx)  || null) : null,
           amount,
           balance,
         });
