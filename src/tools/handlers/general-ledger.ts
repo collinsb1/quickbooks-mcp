@@ -85,7 +85,7 @@ function parseGLReportDetail(report: GLReport): ParsedGL {
   const splitIdx     = columns.findIndex(c => c.ColTitle === "Split");
   const amountIdx    = columns.findIndex(c => c.ColTitle === "Amount");
   const balanceIdx   = columns.findIndex(c => c.ColTitle === "Balance");
-  const classIdx     = columns.findIndex(c => c.ColTitle === "Class");
+  const classIdx     = columns.findIndex(c => c.ColTitle === "Class" || c.ColTitle === "Item class");
   const deptIdx      = columns.findIndex(c => c.ColTitle === "Location" || c.ColTitle === "Department");
 
   let openingBalance = 0;
