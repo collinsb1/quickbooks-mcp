@@ -212,7 +212,8 @@ export const toolDefinitions = [
       "Unlike query_account_transactions, this tool sees ALL transaction types including Transfers. " +
       "Use this for reconciliation, auditing, or any investigation requiring full GL detail. " +
       "Results are capped at 500 lines; summary stats always reflect the complete dataset. " +
-      "If truncated, narrow the date range to retrieve all detail.",
+      "If truncated, narrow the date range to retrieve all detail. " +
+      "Each line includes a department field (QBO Class — used as Department at OOO) and location field (QBO Location/Dept).",
     inputSchema: {
       type: "object",
       properties: {
@@ -228,9 +229,13 @@ export const toolDefinitions = [
           type: "string",
           description: "End date YYYY-MM-DD (required)",
         },
+        class_name: {
+          type: "string",
+          description: "Filter by Department (QBO Class) — e.g. 'Executive', 'Finance & Accounting', 'General Overhead', 'Revenue'. This is what OOO refers to as Department.",
+        },
         department: {
           type: "string",
-          description: "Filter to specific department/location (optional)",
+          description: "Filter by QBO Location/Dept (optional). Note: at OOO this is Location, not Department — use class_name to filter by Department.",
         },
         accounting_method: {
           type: "string",

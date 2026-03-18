@@ -16,7 +16,7 @@
 // Transaction lines are capped at GL_LINE_LIMIT; truncation warning is included when hit.
 
 import QuickBooks from "node-quickbooks";
-import { resolveAccount, resolveDepartmentId, promisify } from "../../client/index.js";
+import { resolveAccount, resolveDepartmentId, resolveClassId, promisify } from "../../client/index.js";
 import { outputReport } from "../../utils/index.js";
 import { QBReport } from "../../types/index.js";
 
@@ -185,10 +185,11 @@ export async function handleGetGeneralLedger(
     start_date: string;
     end_date: string;
     department?: string;
+    class_name?: string;
     accounting_method?: string;
   }
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
-  const { account, start_date, end_date, department, accounting_method } = args;
+  const { account, start_date, end_date, department, class_name, accounting_method } = args;
 
   // Resolve account using cache
   const resolvedAccount = await resolveAccount(client, account);
@@ -205,6 +206,9 @@ export async function handleGetGeneralLedger(
 
   if (department) {
     options.department = await resolveDepartmentId(client, department);
+  }
+  if (class_name) {
+    options.class_id = await resolveClassId(client, class_name);
   }
   if (accounting_method) {
     options.accounting_method = accounting_method;
@@ -241,7 +245,8 @@ export async function handleGetGeneralLedger(
     `Period:  ${start_date} to ${end_date}`,
   ];
 
-  if (department)        summaryLines.push(`Department: ${department}`);
+  if (class_name)        summaryLines.push(`Department (Class): ${class_name}`);
+  if (department)        summaryLines.push(`Location: ${department}`);
   if (accounting_method) summaryLines.push(`Basis: ${accounting_method}`);
 
   summaryLines.push("");
