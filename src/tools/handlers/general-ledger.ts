@@ -16,7 +16,7 @@
 // Transaction lines are capped at GL_LINE_LIMIT; truncation warning is included when hit.
 
 import QuickBooks from "node-quickbooks";
-import { resolveAccount, resolveDepartmentId, resolveClassId, promisify } from "../../client/index.js";
+import { resolveAccount, resolveDepartmentId, promisify } from "../../client/index.js";
 import { outputReport } from "../../utils/index.js";
 import { QBReport } from "../../types/index.js";
 
@@ -207,9 +207,8 @@ export async function handleGetGeneralLedger(
   if (department) {
     options.department = await resolveDepartmentId(client, department);
   }
-  if (class_name) {
-    options.class_id = await resolveClassId(client, class_name);
-  }
+  // Note: QBO GL report API does not support class_id as a server-side filter.
+  // class_name filtering is applied client-side after parsing (see below).
   if (accounting_method) {
     options.accounting_method = accounting_method;
   }
@@ -221,6 +220,13 @@ export async function handleGetGeneralLedger(
 
   // Parse into structured line-level data
   const parsed = parseGLReportDetail(report);
+
+  // Apply client-side class_name filter if provided (QBO GL API does not support server-side class filtering)
+  if (class_name) {
+    const normalised = class_name.trim().toLowerCase();
+    parsed.lines = parsed.lines.filter(l => (l.department ?? "").toLowerCase() === normalised);
+    parsed.transactionCount = parsed.lines.length;
+  }
 
   // Cap lines at GL_LINE_LIMIT — summary stats always reflect the full dataset
   const truncated   = parsed.lines.length > GL_LINE_LIMIT;
